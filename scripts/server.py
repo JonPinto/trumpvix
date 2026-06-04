@@ -523,6 +523,40 @@ def reactions(statement_id: str):
     )
 
 
+@app.post("/api/refresh")
+def refresh():
+    import os
+    import subprocess
+
+    api_key = os.environ.get("REFRESH_API_KEY", "")
+    provided = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if api_key and provided != api_key:
+        return jsonify({"error": "unauthorized"}), 401
+
+    scripts_dir = os.path.join(os.path.dirname(__file__))
+    results = []
+
+    steps = [
+        ("init_db", ["python", "scripts/init_db.py"]),
+        ("rss", ["python", "scripts/ingest_truth_rss.py"]),
+        ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"]),
+        ("fred", ["python", "scripts/ingest_fred.py"]),
+        ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"]),
+    ]
+
+    for name, cmd in steps:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=os.path.dirname(scripts_dir))
+            status = "ok" if r.returncode == 0 else "error"
+            results.append({"step": name, "status": status, "returncode": r.returncode})
+        except subprocess.TimeoutExpired:
+            results.append({"step": name, "status": "timeout", "returncode": -1})
+        except Exception as e:
+            results.append({"step": name, "status": "exception", "error": str(e)})
+
+    return jsonify({"results": results})
+
+
 if __name__ == "__main__":
     import os
 

@@ -1,0 +1,19 @@
+name: Ingest after deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for deploy
+        run: sleep 120
+
+      - name: Trigger ingestion
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${{ secrets.REFRESH_API_KEY }}" \
+            "${{ secrets.APP_URL }}/api/refresh" | python -m json.tool

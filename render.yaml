@@ -12,3 +12,5 @@ services:
         value: 3.12.0
       - key: PYTHONPATH
         value: scripts
+      - key: REFRESH_API_KEY
+        generateValue: true
