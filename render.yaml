@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: trumpvix
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn scripts.server:app
+    envVars:
+      - key: MVP_DB_PATH
+        value: /opt/render/project/data/mvp.sqlite3
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: PYTHONPATH
+        value: scripts
