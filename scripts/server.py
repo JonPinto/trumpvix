@@ -533,7 +533,11 @@ def refresh():
     if api_key and provided != api_key:
         return jsonify({"error": "unauthorized"}), 401
 
-    scripts_dir = os.path.join(os.path.dirname(__file__))
+    env = os.environ.copy()
+    project_root = os.path.dirname(os.path.dirname(__file__))
+    scripts_dir = os.path.join(project_root, "scripts")
+    env["PYTHONPATH"] = scripts_dir
+
     results = []
 
     steps = [
@@ -546,7 +550,7 @@ def refresh():
 
     for name, cmd in steps:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=os.path.dirname(scripts_dir))
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=project_root, env=env)
             status = "ok" if r.returncode == 0 else "error"
             results.append({"step": name, "status": status, "returncode": r.returncode})
         except subprocess.TimeoutExpired:
