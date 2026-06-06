@@ -537,18 +537,24 @@ def refresh():
     results = []
 
     steps = [
-        ("init_db", ["python", "scripts/init_db.py"]),
-        ("rss", ["python", "scripts/ingest_truth_rss.py"]),
-        ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"]),
-        ("fred", ["python", "scripts/ingest_fred.py"]),
-        ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"]),
+        ("init_db", ["python", "scripts/init_db.py"], 30),
+        ("rss", ["python", "scripts/ingest_truth_rss.py"], 120),
+        ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"], 300),
+        ("fred", ["python", "scripts/ingest_fred.py"], 120),
+        ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"], 120),
     ]
 
-    for name, cmd in steps:
+    for name, cmd, timeout in steps:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=project_root, env=env)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=project_root, env=env)
             status = "ok" if r.returncode == 0 else "error"
-            results.append({"step": name, "status": status, "returncode": r.returncode})
+            results.append({
+                "step": name,
+                "status": status,
+                "returncode": r.returncode,
+                "stdout": r.stdout[-500:] if r.stdout else "",
+                "stderr": r.stderr[-500:] if r.stderr else "",
+            })
         except subprocess.TimeoutExpired:
             results.append({"step": name, "status": "timeout", "returncode": -1})
         except Exception as e:
