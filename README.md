@@ -67,6 +67,24 @@ python scripts/server.py
 - **Loading animations** — page fade-in and logo wiggle on load.
 - **Code quality pass** — shared utils, batched queries (1 instead of 48), IIFE scope, deduplicated helpers.
 
+## Roadmap
+
+### v1.2 — Interactive VIX graph with geopolitics overlay
+
+- **Interactive VIX chart** replacing the static sparkline in the header. Full-width, zoomable, with hover tooltips showing date/value.
+- **Geopolitics keyword detection** — statements containing predefined geopolitics-related keywords (e.g., "tariff", "sanction", "NATO", "China", "Iran", "Ukraine", "military", "nuclear") are flagged during ingestion.
+- **Event dots on VIX graph** — geopolitics-flagged posts appear as colored dots on the VIX timeline at their published timestamp.
+- **Dot-to-post navigation** — clicking a dot scrolls/navigates to the corresponding statement card.
+- **Keyword management** — configurable keyword list stored in the DB, editable via a future admin panel.
+
+### v2.0 — Complex keyword-oriented data correlation
+
+- **Multi-keyword topic grouping** — statements grouped by detected topics (trade, defense, energy, etc.) with aggregate market reaction stats.
+- **Reaction pattern analysis** — for each topic, show average market move, median, and distribution across all posts in that topic.
+- **Correlation matrix** — heatmap showing which market series react most to which topics.
+- **Time-lagged analysis** — measure market reaction at 1h, 2h, 5h, 10h, 24h, 48h after each post to identify delayed reactions.
+- **Exportable reports** — generate CSV/JSON summaries of topic-reaction correlations.
+
 ## Known issues and design limitations
 
 - **FRED upstream instability** — FRED CSV endpoints occasionally return 502/504. Daily indicators (VIX, gas, etc.) go stale until next successful pull. No retry or fallback logic.
@@ -78,7 +96,7 @@ python scripts/server.py
 - **No data validation** — upstream malformed data (missing prices, bad dates) passes through silently.
 - **No offline mode** — requires live internet for yfinance and RSS. No local price cache.
 - **Single-user only** — no auth, no multi-user support, no access control.
-- **No mobile optimization** — designed for desktop viewport. Side panels and timeline bar may not work well on small screens.
+- **No mobile optimization** — side panels render below card on mobile, but timeline bar and some interactions may not be fully optimized for touch.
 - **Static 30-day window** — no dynamic date range selection from API. Hardcoded LIMIT 30.
 - **No export/backup** — no way to export data or back up the SQLite database from the UI.
 - **Logo SVG rendering** — GitHub renders SVGs in READMEs, but some tools/clients may not.
