@@ -298,27 +298,45 @@ def vix():
             """
         ).fetchone()
 
-        if not indicator:
-            return jsonify({"points": []})
+        if indicator:
+            points = conn.execute(
+                """
+                SELECT date, value
+                FROM indicator_points
+                WHERE indicator_id = ? AND date >= ?
+                ORDER BY date ASC
+                """,
+                (indicator["id"], since_date),
+            ).fetchall()
+            if points:
+                return jsonify(
+                    {
+                        "name": indicator["name"],
+                        "series_id": indicator["series_id"],
+                        "unit": indicator["unit"],
+                        "points": [{"date": row["date"], "value": row["value"]} for row in points],
+                    }
+                )
 
-        points = conn.execute(
+        # Fallback: use intraday VXX data
+        rows = conn.execute(
             """
-            SELECT date, value
-            FROM indicator_points
-            WHERE indicator_id = ? AND date >= ?
-            ORDER BY date ASC
-            """,
-            (indicator["id"], since_date),
+            SELECT ts_utc, value
+            FROM intraday_points
+            WHERE series_id = 'VIXCLS'
+            ORDER BY ts_utc ASC
+            """
         ).fetchall()
 
-    return jsonify(
-        {
-            "name": indicator["name"],
-            "series_id": indicator["series_id"],
-            "unit": indicator["unit"],
-            "points": [{"date": row["date"], "value": row["value"]} for row in points],
-        }
-    )
+        points = [{"date": row["ts_utc"][:10], "value": row["value"]} for row in rows]
+        return jsonify(
+            {
+                "name": "VIX",
+                "series_id": "VIXCLS",
+                "unit": "index",
+                "points": points,
+            }
+        )
 
 
 @app.get("/api/reactions/<statement_id>")
@@ -353,6 +371,7 @@ def reactions(statement_id: str):
             SELECT id, name, series_id, unit
             FROM indicators
             WHERE series_id IN ({placeholders})
+            GROUP BY series_id
             """,
             tuple(REACTION_SERIES),
         ).fetchall()
@@ -538,39 +557,41 @@ def refresh():
 
     def _run():
         _refresh_status["running"] = True
-        env = os.environ.copy()
-        project_root = os.path.dirname(os.path.dirname(__file__))
-        scripts_dir = os.path.join(project_root, "scripts")
-        env["PYTHONPATH"] = scripts_dir
+        try:
+            env = os.environ.copy()
+            project_root = os.path.dirname(os.path.dirname(__file__))
+            scripts_dir = os.path.join(project_root, "scripts")
+            env["PYTHONPATH"] = scripts_dir
 
-        results = []
-        steps = [
-            ("init_db", ["python", "scripts/init_db.py"], 30),
-            ("rss", ["python", "scripts/ingest_truth_rss.py"], 120),
-            ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"], 300),
-            ("fred", ["python", "scripts/ingest_fred.py"], 120),
-            ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"], 120),
-        ]
+            results = []
+            steps = [
+                ("init_db", ["python", "scripts/init_db.py"], 30),
+                ("rss", ["python", "scripts/ingest_truth_rss.py"], 120),
+                ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"], 300),
+                ("fred", ["python", "scripts/ingest_fred.py"], 300),
+                ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"], 120),
+            ]
 
-        for name, cmd, timeout in steps:
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=project_root, env=env)
-                status = "ok" if r.returncode == 0 else "error"
-                results.append({
-                    "step": name,
-                    "status": status,
-                    "returncode": r.returncode,
-                    "stdout": r.stdout[-500:] if r.stdout else "",
-                    "stderr": r.stderr[-500:] if r.stderr else "",
-                })
-            except subprocess.TimeoutExpired:
-                results.append({"step": name, "status": "timeout", "returncode": -1})
-            except Exception as e:
-                results.append({"step": name, "status": "exception", "error": str(e)})
+            for name, cmd, timeout in steps:
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=project_root, env=env)
+                    status = "ok" if r.returncode == 0 else "error"
+                    results.append({
+                        "step": name,
+                        "status": status,
+                        "returncode": r.returncode,
+                        "stdout": r.stdout[-500:] if r.stdout else "",
+                        "stderr": r.stderr[-500:] if r.stderr else "",
+                    })
+                except subprocess.TimeoutExpired:
+                    results.append({"step": name, "status": "timeout", "returncode": -1})
+                except Exception as e:
+                    results.append({"step": name, "status": "exception", "error": str(e)})
 
-        _refresh_status["results"] = results
-        _refresh_status["last_run"] = now_iso()
-        _refresh_status["running"] = False
+            _refresh_status["results"] = results
+            _refresh_status["last_run"] = now_iso()
+        finally:
+            _refresh_status["running"] = False
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"status": "started"}), 202

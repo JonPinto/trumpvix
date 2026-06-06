@@ -7,6 +7,36 @@ import yfinance as yf
 
 from db import connect, now_iso, iso_utc
 
+INDICATOR_META = {
+    "SP500": ("S&P 500", "index"),
+    "NASDAQCOM": ("Nasdaq Composite", "index"),
+    "DJIA": ("Dow Jones Industrial Average", "index"),
+    "DTWEXBGS": ("Broad Dollar Index", "index"),
+    "DCOILWTICO": ("WTI Crude Oil", "usd_per_barrel"),
+    "DCOILBRENTEU": ("Brent Crude Oil", "usd_per_barrel"),
+    "DHHNGSP": ("Natural Gas (Henry Hub)", "usd_per_mmbtu"),
+    "GASREGCOVW": ("Gasoline (US Regular Retail)", "usd_per_gallon"),
+    "VIXCLS": ("VIX", "index"),
+    "BTCUSD": ("Bitcoin", "usd"),
+    "ETHUSD": ("Ethereum", "usd"),
+    "DEXUSEU": ("USD to Euro", "usd_per_eur"),
+    "DEXJPUS": ("Japanese Yen to USD", "yen_per_usd"),
+}
+
+
+def ensure_indicators(series_ids: list[str], ingested_at: str) -> None:
+    with connect() as conn:
+        for sid in series_ids:
+            name, unit = INDICATOR_META.get(sid, (sid, "index"))
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO indicators (id, name, series_id, frequency, source, unit, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (f"intraday:{sid}", name, sid, "intraday", "yfinance", unit, ingested_at),
+            )
+        conn.commit()
+
 
 def upsert_points(series_id: str, source: str, points: list[tuple[str, float]], ingested_at: str) -> int:
     with connect() as conn:
@@ -41,7 +71,6 @@ def fetch_intraday(ticker: str) -> list[tuple[str, float]]:
 def main() -> None:
     ingested_at = now_iso()
 
-    # Equities/ETFs — Yahoo tickers for our proxy mapping.
     equity_map = {
         "SP500": "SPY",
         "NASDAQCOM": "QQQ",
@@ -56,11 +85,13 @@ def main() -> None:
         "ETHUSD": "ETH-USD",
     }
 
-    # FX — Yahoo uses "CUR1CUR2=X" format.
     fx_map = {
         "DEXUSEU": "EURUSD=X",
         "DEXJPUS": "JPY=X",
     }
+
+    all_series = list(equity_map.keys()) + list(fx_map.keys())
+    ensure_indicators(all_series, ingested_at)
 
     for series_id, ticker in equity_map.items():
         try:
