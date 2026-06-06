@@ -523,44 +523,62 @@ def reactions(statement_id: str):
     )
 
 
+_refresh_status = {"running": False, "last_run": None, "results": []}
+
+
 @app.get("/api/refresh")
 @app.post("/api/refresh")
 def refresh():
     import os
     import subprocess
+    import threading
 
-    env = os.environ.copy()
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    scripts_dir = os.path.join(project_root, "scripts")
-    env["PYTHONPATH"] = scripts_dir
+    if _refresh_status["running"]:
+        return jsonify({"status": "already running", "results": _refresh_status["results"]}), 202
 
-    results = []
+    def _run():
+        _refresh_status["running"] = True
+        env = os.environ.copy()
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        scripts_dir = os.path.join(project_root, "scripts")
+        env["PYTHONPATH"] = scripts_dir
 
-    steps = [
-        ("init_db", ["python", "scripts/init_db.py"], 30),
-        ("rss", ["python", "scripts/ingest_truth_rss.py"], 120),
-        ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"], 300),
-        ("fred", ["python", "scripts/ingest_fred.py"], 120),
-        ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"], 120),
-    ]
+        results = []
+        steps = [
+            ("init_db", ["python", "scripts/init_db.py"], 30),
+            ("rss", ["python", "scripts/ingest_truth_rss.py"], 120),
+            ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"], 300),
+            ("fred", ["python", "scripts/ingest_fred.py"], 120),
+            ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"], 120),
+        ]
 
-    for name, cmd, timeout in steps:
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=project_root, env=env)
-            status = "ok" if r.returncode == 0 else "error"
-            results.append({
-                "step": name,
-                "status": status,
-                "returncode": r.returncode,
-                "stdout": r.stdout[-500:] if r.stdout else "",
-                "stderr": r.stderr[-500:] if r.stderr else "",
-            })
-        except subprocess.TimeoutExpired:
-            results.append({"step": name, "status": "timeout", "returncode": -1})
-        except Exception as e:
-            results.append({"step": name, "status": "exception", "error": str(e)})
+        for name, cmd, timeout in steps:
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=project_root, env=env)
+                status = "ok" if r.returncode == 0 else "error"
+                results.append({
+                    "step": name,
+                    "status": status,
+                    "returncode": r.returncode,
+                    "stdout": r.stdout[-500:] if r.stdout else "",
+                    "stderr": r.stderr[-500:] if r.stderr else "",
+                })
+            except subprocess.TimeoutExpired:
+                results.append({"step": name, "status": "timeout", "returncode": -1})
+            except Exception as e:
+                results.append({"step": name, "status": "exception", "error": str(e)})
 
-    return jsonify({"results": results})
+        _refresh_status["results"] = results
+        _refresh_status["last_run"] = now_iso()
+        _refresh_status["running"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"status": "started"}), 202
+
+
+@app.get("/api/refresh/status")
+def refresh_status():
+    return jsonify(_refresh_status)
 
 
 if __name__ == "__main__":

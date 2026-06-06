@@ -10,8 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for deploy
-        run: sleep 120
+        run: sleep 180
 
-      - name: Trigger ingestion
-        run: |
-          curl -sf "${{ secrets.APP_URL }}/api/refresh" | python -m json.tool
+      - name: Start ingestion
+        run: curl -sf "${{ secrets.APP_URL }}/api/refresh"
+
+      - name: Wait for completion
+        run: sleep 360
+
+      - name: Check results
+        run: curl -sf "${{ secrets.APP_URL }}/api/refresh/status" | python -m json.tool
