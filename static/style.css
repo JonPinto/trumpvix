@@ -606,7 +606,40 @@ mark.highlight {
   .stack { grid-template-columns: 1fr; }
   .search-bar { grid-column: 1; }
   .search-bar.reactions-active { grid-column: 1; }
-  .reaction-side { display: none; }
+
+  .content-area {
+    flex-direction: column;
+  }
+
+  .reaction-side {
+    display: flex;
+    flex: none;
+    width: 100%;
+    opacity: 0;
+    pointer-events: none;
+    transform: none;
+    flex-direction: column;
+  }
+
+  .reaction-side.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .reaction-side-scroll {
+    max-height: 320px;
+  }
+
+  .reaction-side-boxes {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .reaction-box {
+    flex: 1 1 calc(50% - 0.25rem);
+    min-width: 140px;
+  }
 }
 
 @media (max-width: 640px) {
@@ -620,4 +653,9 @@ mark.highlight {
   .carousel-track .card { padding: 1.25rem 1.25rem 1rem; }
   .link-card { grid-template-columns: 1fr; }
   .stack { padding: 1rem 4vw 4rem; }
+
+  .reaction-box {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
