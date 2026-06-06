@@ -523,15 +523,11 @@ def reactions(statement_id: str):
     )
 
 
+@app.get("/api/refresh")
 @app.post("/api/refresh")
 def refresh():
     import os
     import subprocess
-
-    api_key = os.environ.get("REFRESH_API_KEY", "")
-    provided = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if api_key and provided != api_key:
-        return jsonify({"error": "unauthorized"}), 401
 
     env = os.environ.copy()
     project_root = os.path.dirname(os.path.dirname(__file__))

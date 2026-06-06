@@ -14,6 +14,4 @@ jobs:
 
       - name: Trigger ingestion
         run: |
-          curl -sf -X POST \
-            -H "Authorization: Bearer ${{ secrets.REFRESH_API_KEY }}" \
-            "${{ secrets.APP_URL }}/api/refresh" | python -m json.tool
+          curl -sf "${{ secrets.APP_URL }}/api/refresh" | python -m json.tool
