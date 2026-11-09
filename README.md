@@ -20,6 +20,12 @@ TrumpVIX pulls posts from the [trumpstruth.org](https://trumpstruth.org) RSS fee
 
 Packaging as a standalone desktop or mobile app is not implemented yet. This README covers running from source.
 
+<p align="center">
+  <img src="docs/dashboard-desktop.jpg" alt="TrumpVIX dashboard showing a statement card, the 12 market reaction panels, the VIX sparkline and a Wikimedia Commons background" width="100%">
+</p>
+
+<p align="center"><em>Statement card, reaction panels, VIX sparkline and a Commons background.</em></p>
+
 ## What you get
 
 - **Statement feed** — swipe, keyboard arrows or click through posts; up to 30 posts per view.

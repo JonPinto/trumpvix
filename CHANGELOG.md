@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rewrote the README for the current v1.2 state: quick start, first-run
   behaviour, configuration, project layout, API notes, service and security
   guidance, troubleshooting, and refreshed limitations.
+- Added a desktop screenshot to the README.
 
 ### Removed
 
