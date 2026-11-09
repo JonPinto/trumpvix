@@ -6,138 +6,266 @@
 
 <p align="center">Local dashboard tracking Trump Truth Social statements against market reactions.<br>No inference, no opinions — just data.</p>
 
-<p align="center"><a href="CHANGELOG.md">Release history</a></p>
+<p align="center">
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="https://github.com/JonPinto/trumpvix/releases">Releases</a> ·
+  <a href="#roadmap">Roadmap</a>
+</p>
 
 ---
 
+## What it is
+
+TrumpVIX pulls posts from the [trumpstruth.org](https://trumpstruth.org) RSS feed, stores them in a local SQLite database, and shows how 12 market series moved around each post. It runs entirely on your machine — no accounts, no cloud backend, no API keys.
+
+Packaging as a standalone desktop or mobile app is not implemented yet. This README covers running from source.
+
+## What you get
+
+- **Statement feed** — swipe, keyboard arrows or click through posts; up to 30 posts per view.
+- **Reaction summary** — the S&P 500 10-hour move and "now vs. pre-post" on every card.
+- **12-series panels** — indices, currencies, energy, metals and crypto in two columns.
+- **Timeline** — up to 30 dots with arrow buttons; phones show the arrows only.
+- **Search and date picker** — keyword search with highlighted matches, or jump to a UTC day.
+- **Media** — a 1–4 tile grid, full-screen viewing with ‹ › cycling, and in-place video playback with a progress bar.
+- **Backgrounds** — a random Wikimedia Commons photo, landscape on desktop and portrait on phones, credited in-app.
+- **Mobile layout** — larger type and tap targets at 640px and below, two-row search and a stacked card header.
+- **Live refresh** — the refresh button shows progress, and the page reloads data as each source lands.
+- **VIX sparkline** — 30-day VIX in the header.
+
+## Requirements
+
+- Python 3.12 or newer (tested on 3.14).
+- Internet access for ingestion: RSS, Yahoo Finance, FRED and Wikimedia Commons.
+- About 100 MB for the code and virtualenv, plus temporary space for the video cache.
+- Linux or macOS. Windows is not regularly tested.
+
 ## Quick start
 
-Requires Python 3.12+ (tested on 3.14).
-
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+git clone https://github.com/JonPinto/trumpvix.git
+cd trumpvix
+
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 python scripts/server.py
-# → http://127.0.0.1:5000
 ```
 
-On start, the server serves whatever is already in the database and fetches fresh data in the background (about 10 seconds); the page fills in as each source arrives. The refresh button next to the date picker fetches the latest data again at any time.
+Open **http://127.0.0.1:5000**.
 
-To run the ingestion steps by hand instead:
+On first run the server creates `data/mvp.sqlite3`, starts a background refresh, and serves the page immediately. Cards fill in as each source finishes, usually within about 10 seconds. The refresh button next to the date picker re-runs the pipeline at any time.
+
+If the page says "API unavailable", the server is not running or is on a different port.
+
+> The dev server listens on `0.0.0.0`, not just localhost, and has no authentication. Anyone on your network can reach it. See [Security](#security).
+
+## How it works
+
+### Data sources
+
+| Source | Used for | Notes |
+|---|---|---|
+| [trumpstruth.org](https://trumpstruth.org/feed) RSS | Posts and media | Full provenance (`source_url`, `original_url`) |
+| Yahoo Finance via `yfinance` | Hourly intraday bars | Last 5 days per fetch; ETF/ETN proxies; unofficial and possibly delayed |
+| [FRED](https://fred.stlouisfed.org/) CSV | Daily indicators | VIX, dollar index, Treasuries, copper, gasoline; up to 3 attempts with backoff |
+| OpenGraph | Link previews | Title, description, image, site name |
+| [Wikimedia Commons](https://commons.wikimedia.org/) | Page background | Landscape on desktop, portrait on mobile; credited in-app |
+
+Intraday proxies are defined in [`scripts/series.py`](scripts/series.py) — for example SPY for the S&P 500, QQQ for the Nasdaq, USO for WTI and VXX for the VIX fallback. Bitcoin and Ethereum use their Yahoo tickers directly.
+
+### Reaction model
+
+For each post, the dashboard measures the change from the last price at or before the post to the price 10 **NYSE open hours** later:
+
+- Counting only 9:30–16:00 ET, Monday–Friday.
+- If the post lands before the open, the window starts at 9:30 that day.
+- If it lands after the close, the window starts at the next trading day's open.
+- If it lands on a weekend, the window starts on Monday's open.
+- The window carries across sessions and weekends.
+- US market holidays are not handled yet.
+
+The card summary uses the S&P 500; expanding a card shows all 12 reaction series. Each series also shows the move from the pre-post price to the latest price.
+
+### Storage
+
+Everything lives in one SQLite file, `data/mvp.sqlite3` by default:
+
+| Table | Contents |
+|---|---|
+| `statements` | Posts, text, HTML, provenance, first media URL |
+| `statement_media` | Every image/video for a post, in feed order |
+| `indicators` | Indicator metadata (FRED and intraday) |
+| `indicator_points` | Daily FRED observations |
+| `intraday_points` | Hourly Yahoo bars |
+| `link_previews` | OpenGraph metadata |
+| `sources` | Feed/source metadata |
+
+The database is created automatically and is gitignored. To start over, stop the server and delete the file.
+
+## Configuration
+
+| Variable | Default | Read by | Description |
+|---|---|---|---|
+| `MVP_DB_PATH` | `data/mvp.sqlite3` | server and scripts | SQLite database path |
+| `PORT` | `5000` | `scripts/server.py` | HTTP port for the dev server |
+| `REFRESH_ON_START` | `1` | `scripts/server.py` | Set to `0` to skip the refresh on startup |
+
+`PORT` and `REFRESH_ON_START` are read in the `__main__` block of `scripts/server.py`. Under gunicorn, trigger a refresh with `POST /api/refresh` instead.
+
+```bash
+PORT=5001 REFRESH_ON_START=0 python scripts/server.py
+```
+
+## Project layout
+
+```
+app.py                        WSGI entry point for gunicorn (app:app)
+scripts/
+  server.py                   Flask app, API, refresh orchestration
+  db.py                       Schema, connections, timestamp helpers
+  series.py                   Market series definitions (single source of truth)
+  ingest_truth_rss.py         RSS ingestion and media extraction
+  ingest_intraday_yfinance.py Hourly bars from Yahoo Finance
+  ingest_fred.py              Daily indicators from FRED
+  fetch_link_previews.py      OpenGraph preview fetcher
+  link_preview.py             OpenGraph parsing helpers
+  commons_background.py       Commons search, filtering and background pool
+  media_cache.py              Per-run video cache for /api/video
+  init_db.py                  Create or migrate the schema
+  deploy.sh                   Run the full ingestion pipeline once
+  preview.py                  Print a DB summary to the terminal
+templates/index.html          Single-page frontend
+static/                       CSS and logo
+data/                         SQLite database (created at runtime, gitignored)
+```
+
+## Scripts
+
+Run these with the virtualenv active, from the repo root.
+
+| Script | Purpose |
+|---|---|
+| `scripts/server.py` | Start the dashboard and API |
+| `scripts/init_db.py` | Create or migrate the schema (optional; the server does this on first connect) |
+| `scripts/ingest_truth_rss.py` | Pull the latest posts and media |
+| `scripts/ingest_intraday_yfinance.py` | Fetch 5 days of hourly bars for all intraday series |
+| `scripts/ingest_fred.py` | Fetch daily FRED indicators |
+| `scripts/fetch_link_previews.py` | Fetch OpenGraph previews (`--limit`, `--refresh-days`) |
+| `scripts/deploy.sh` | Run all ingestion steps once, in order |
+| `scripts/preview.py` | Print statement/indicator counts and the latest rows |
+
+To ingest by hand instead of using the server's refresh:
 
 ```bash
 python scripts/init_db.py
 python scripts/ingest_truth_rss.py
 python scripts/ingest_intraday_yfinance.py
 python scripts/ingest_fred.py
-python scripts/fetch_link_previews.py
+python scripts/fetch_link_previews.py --limit 30
 ```
-
-## How it works
-
-**Data sources:**
-- **Statements** — RSS feed from [trumpstruth.org](https://trumpstruth.org/feed), stored with full provenance.
-- **Intraday prices** — yfinance hourly bars over the last 5 days, accumulated in the DB on each refresh. Most series use an ETF/ETN as an intraday proxy (e.g. SPY for the S&P 500, USO for WTI crude, VXX for VIX); the mapping lives in `scripts/series.py`.
-- **Daily indicators** — FRED CSV (VIX, dollar index, etc.).
-- **Link previews** — OpenGraph metadata from linked articles.
-- **Background photos** — a random Trump-related photo from [Wikimedia Commons](https://commons.wikimedia.org/), cached in memory for six hours and re-picked on each page load or data refresh.
-
-**Reaction model:** For each statement, the dashboard computes market change over a **10-hour market-time window** (counting only NYSE open hours: 9:30–16:00 ET, Mon–Fri). It finds the nearest intraday price before and after the window, and reports the percentage move.
-
-**Frontend:** Single-page dark-themed UI. Swipe through posts, see the reaction summary on each card, expand side-by-side reactions for any post. Timeline bar shows 30 days of posts as dots (direction buttons only on phones). A post's images and videos are shown as a grid; clicking one opens it full-size in place, where ‹ › cycle through all of the post's media (✕ or Esc returns to the grid). Opening a video from the grid starts it right away; cycling to a video shows its poster and waits for the play button. Playing downloads the video through the server with a progress bar, then plays it. Downloaded videos are cached in a temp folder for the rest of the server's run and deleted when it stops. The page background is a random Wikimedia Commons photo (landscape on desktop, portrait on mobile) that fades in over the solid colour; its photographer and licence are credited at the bottom-left on wide screens. On phones the whole UI scales up for comfortable reading and tapping, and the search bar splits into two rows so it never overflows.
-
-## Configuration
-
-| Variable | Default | Description |
-|---|---|---|
-| `MVP_DB_PATH` | `data/mvp.sqlite3` | SQLite database path |
-| `PORT` | `5000` | Port for `scripts/server.py` |
-| `REFRESH_ON_START` | `1` | Set to `0` to stop `scripts/server.py` from fetching fresh data when it starts (gunicorn never does) |
-
-## Scripts
-
-| Script | Purpose |
-|---|---|
-| `init_db.py` | Create or migrate the SQLite schema |
-| `ingest_truth_rss.py` | Pull latest posts from RSS |
-| `ingest_intraday_yfinance.py` | Fetch hourly prices via yfinance |
-| `ingest_fred.py` | Pull daily indicators from FRED |
-| `fetch_link_previews.py` | Fetch OpenGraph metadata for linked URLs |
-| `preview.py` | Print DB summary to terminal |
-| `server.py` | Flask server and API |
-| `media_cache.py` | Per-run temp-folder cache for videos served by `/api/video` |
-| `commons_background.py` | Wikimedia Commons search, filtering and in-memory background pool |
-| `series.py` | The market series: names, units, FRED ids, Yahoo tickers, which appear in reactions |
-| `db.py` | Schema, connections, timestamp helpers |
 
 ## API
 
+The server returns JSON. There is no authentication.
+
 | Endpoint | Description |
 |---|---|
-| `GET /api/statements` | Up to 30 newest posts, each with its `media` (images/videos in order). Query: `days` (1–365, default 30), `date` (`YYYY-MM-DD`, UTC day), `q` (text search) |
-| `GET /api/reactions/<statement_id>` | Market reaction for one post across the reaction series |
-| `GET /api/video?statement=<id>&position=<n>` | A post's video, proxied and cached for the server's run (only videos stored for that post; max 500 MB) |
-| `GET /api/background?orientation=landscape\|portrait` | A random Trump-related Wikimedia Commons photo (landscape for desktop, portrait for mobile); the candidate pool is cached for six hours |
-| `GET /api/vix?days=30` | Daily VIX from FRED (falls back to intraday VXX, labelled as a proxy) |
-| `GET /api/indicators?days=30` | All indicators with their daily points |
-| `POST /api/refresh` | Start a background data refresh (one at a time) |
-| `GET /api/refresh/status` | Refresh progress: current step and per-step results |
+| `GET /` | The dashboard |
+| `GET /api/statements` | Up to 30 newest posts, each with `media` and `link_previews`. Query: `days` (1–365, default 30), `date` (`YYYY-MM-DD`, UTC), `q` (text search) |
+| `GET /api/reactions/<statement_id>` | Reaction for one post across the 12 reaction series |
+| `GET /api/video?statement=<id>&position=<n>` | Proxy and cache a post's video (max 500 MB) |
+| `GET /api/background?orientation=landscape\|portrait` | Random Commons photo; the pool is cached for 6 hours |
+| `GET /api/vix?days=30` | Daily VIX from FRED, or VXX intraday as a labelled proxy |
+| `GET /api/indicators?days=30` | All indicators with daily points |
+| `POST /api/refresh` | Start a background refresh; returns 202 |
+| `GET /api/refresh/status` | Current step, per-step results and last run time |
 
-## Features delivered
+Notes:
 
-- **Full ingestion pipeline** — RSS posts, FRED daily indicators, intraday prices via yfinance, OpenGraph link previews.
-- **12 market series** — SP500, NASDAQ, DJIA, dollar index, EUR/USD, JPY/USD, WTI crude, Brent crude, natural gas, gasoline, Bitcoin, Ethereum.
-- **10-hour market-time reaction model** — counts only NYSE open hours, carries across sessions.
-- **Reaction summary on card** — at-a-glance SP500 move (10h window + now vs. pre-post) on every statement.
-- **Side-by-side reaction panels** — expand any post to see 12 market series in two columns.
-- **Swipe card navigation** — animated card transitions with keyboard and click support.
-- **Floating timeline bar** — 30 dots (one per post), arrow buttons, click-to-jump; phones show only the arrows.
-- **Keyword search** — server-side filtering with client-side `<mark>` highlighting.
-- **Custom date picker** — dropdown calendar with clear/go controls.
-- **Media grid and video playback** — multi-image posts render as a grid; images open full-size in place and cycle with ‹ ›. Videos expand the same way, download with a progress bar, and play in place.
-- **Wikimedia Commons background** — a new Trump-related photo on each page load or data refresh, with a solid-colour standby and fade-in.
-- **Mobile layout** — larger text and tap targets on phones; the search bar splits into two rows and the timeline reduces to direction buttons.
-- **Loading animations** — page fade-in and logo wiggle on load.
-- **Code quality pass** — shared utils, indexed single-row reaction lookups, cached statement rendering, IIFE scope, deduplicated helpers.
+- `/api/statements` returns at most 30 rows. `q` searches the selected window (default: the last 30 days).
+- `date` uses UTC day boundaries, matching how timestamps are stored.
+- `statement_id` uses a path converter, so IDs containing `/` work.
+- `/api/video` only serves videos stored for that statement and position; otherwise 404.
+- `/api/background` returns 503 if Commons is unavailable; the page keeps its solid colour.
+
+## Running as a service
+
+`gunicorn` is included in `requirements.txt`, and `app.py` is a WSGI entry point:
+
+```bash
+MVP_DB_PATH=/var/lib/trumpvix/mvp.sqlite3 \
+  gunicorn --worker-class gthread --workers 1 --threads 4 \
+  --bind 127.0.0.1:8000 app:app
+```
+
+Use **one worker**. Refresh status and the Commons background pool live in process memory; multiple workers would each run their own refresh and return inconsistent state. Put a reverse proxy with TLS in front if the app is reachable from other machines.
+
+A refresh on start is only wired into `scripts/server.py`, so under gunicorn either call `POST /api/refresh` or schedule it with cron/systemd.
+
+The app needs a **persistent disk** for SQLite and an **always-on process**. Free PaaS tiers that sleep or use ephemeral filesystems will lose data or cold-start on every visit.
+
+## Security
+
+This is a single-user, local-first app. Before exposing it beyond your machine:
+
+- There is no login. Anyone who can reach the port can read the data and trigger refreshes.
+- The dev server binds to `0.0.0.0`. Use a host firewall, or run gunicorn on `127.0.0.1` behind a reverse proxy.
+- Put authentication and TLS in front (for example Caddy basic auth, or Cloudflare Access).
+- Do not expose `/api/refresh` to untrusted networks without protection.
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `Address already in use` | Another process is on port 5000. Run `PORT=5001 python scripts/server.py`. |
+| "API unavailable" on the page | Server not running, wrong port, or blocked by a firewall. |
+| Cards are empty | The first refresh is still running. Check `/api/refresh/status` and the server log. |
+| No intraday data | Yahoo rate limit or network issue. Retry later; history accumulates across runs. |
+| FRED indicators are stale | FRED returned 502/504. Each series retries up to 3 times; the next successful run updates it. |
+| Videos do not play | The post's video URL may be unavailable, or the 500 MB cap was hit. Check the server log. |
+| Background is a solid colour | Commons is unreachable; the page falls back to the solid background. |
+| Want a clean database | Stop the server, delete `data/mvp.sqlite3`, start again. |
+| Python 3.14 install fails | A dependency has no wheel yet. Use Python 3.12 or 3.13. |
+
+## Known limitations
+
+- **No scheduling** — data refreshes on server start, on the refresh button, or on `POST /api/refresh`. Nothing runs periodically while the server is up.
+- **FRED can be flaky** — 502/504 responses leave daily indicators stale until the next successful pull.
+- **Yahoo has no retry/backoff** — rapid refreshes can be throttled, and intraday history only covers 5 days per fetch.
+- **US market holidays are ignored** — the 10-hour window assumes Monday–Friday are trading days.
+- **Search is limited** — it covers the last 30 days (or the selected date window) and returns at most 30 matches.
+- **No paging** — the API returns at most 30 posts per request.
+- **Short intraday history** — posts older than your stored hourly bars show missing reactions; FRED's daily fallback only applies to series with no intraday data at all.
+- **SQLite is single-writer** — fine for one user, not for many concurrent writers or multiple servers.
+- **No auth or multi-user support** — see [Security](#security).
+- **No export or UI backup** — back up the SQLite file directly.
+- **No offline mode** — fresh data needs internet; already-stored data remains readable.
+- **Hardcoded RSS source** — locked to trumpstruth.org.
+- **Upstream data is stored as-is** — malformed or missing values can pass through.
+- **No automated tests** — verify changes by running the server and exercising the UI.
 
 ## Roadmap
 
 ### v1.3 — Interactive VIX graph with geopolitics overlay
 
-- **Interactive VIX chart** replacing the static sparkline in the header. Full-width, zoomable, with hover tooltips showing date/value.
-- **Geopolitics keyword detection** — statements containing predefined geopolitics-related keywords (e.g., "tariff", "sanction", "NATO", "China", "Iran", "Ukraine", "military", "nuclear") are flagged during ingestion.
-- **Event dots on VIX graph** — geopolitics-flagged posts appear as colored dots on the VIX timeline at their published timestamp.
-- **Dot-to-post navigation** — clicking a dot scrolls/navigates to the corresponding statement card.
-- **Keyword management** — configurable keyword list stored in the DB, editable via a future admin panel.
+- Replace the header sparkline with a full-width, zoomable VIX chart with hover tooltips.
+- Flag posts containing geopolitics keywords (tariff, sanction, NATO, China, Iran, Ukraine, military, nuclear) during ingestion.
+- Show flagged posts as event dots on the VIX timeline.
+- Click a dot to jump to the corresponding statement.
+- Make the keyword list configurable in the database.
 
-### v2.0 — Complex keyword-oriented data correlation
+### v2.0 — Keyword-oriented correlation
 
-- **Multi-keyword topic grouping** — statements grouped by detected topics (trade, defense, energy, etc.) with aggregate market reaction stats.
-- **Reaction pattern analysis** — for each topic, show average market move, median, and distribution across all posts in that topic.
-- **Correlation matrix** — heatmap showing which market series react most to which topics.
-- **Time-lagged analysis** — measure market reaction at 1h, 2h, 5h, 10h, 24h, 48h after each post to identify delayed reactions.
-- **Exportable reports** — generate CSV/JSON summaries of topic-reaction correlations.
+- Group statements by topic (trade, defense, energy, etc.).
+- Show average, median and distribution of market moves per topic.
+- Add a topic × series correlation heatmap.
+- Measure reactions at 1h, 2h, 5h, 10h, 24h and 48h.
+- Export topic-reaction summaries as CSV/JSON.
 
-## Known issues and design limitations
+## Data and disclaimer
 
-- **FRED upstream instability** — FRED CSV endpoints occasionally return 502/504. Each series is retried 3 times with backoff; after that, daily indicators (VIX, gas, etc.) go stale until the next successful pull. No fallback source.
-- **No scheduling** — data is fetched when `scripts/server.py` starts, when you press the refresh button, or on `POST /api/refresh`. No periodic auto-refresh, so data drifts stale while the server stays up.
-- **yfinance rate limits** — heavy or rapid requests may get throttled. No backoff or caching layer.
-- **SQLite concurrency** — single writer. The server keeps serving while a refresh writes, and ingestion steps write in short transactions, but this is not built for many concurrent writers or a multi-server deployment.
-- **No market holiday handling** — the 10-hour model assumes Mon–Fri are trading days. US holidays cause misaligned windows.
-- **No data validation** — upstream malformed data (missing prices, bad dates) passes through silently.
-- **No offline mode** — requires live internet for yfinance, RSS and Wikimedia Commons backgrounds. No local price cache; if Commons is unavailable, the page keeps its solid background.
-- **Single-user only** — no auth, no multi-user support, no access control.
-- **No mobile optimization** — side panels render below card on mobile, but timeline bar and some interactions may not be fully optimized for touch.
-- **Static 30-post window** — the page always asks for the last 30 days, and the API returns at most 30 posts per request (no paging).
-- **Short intraday history** — Yahoo only provides 5 days of hourly bars per fetch. History builds up as you refresh, but reactions for posts older than your stored intraday history show as missing (the daily FRED fallback only applies to series with no intraday data at all).
-- **No export/backup** — no way to export data or back up the SQLite database from the UI.
-- **Logo SVG rendering** — GitHub renders SVGs in READMEs, but some tools/clients may not.
-- **Hardcoded RSS source** — locked to trumpstruth.org. No support for alternative or additional feeds.
+Market data comes from Yahoo Finance via `yfinance` and from FRED. Yahoo data is unofficial, may be delayed, and can be revised or missing. FRED data is subject to revision. Nothing here is financial advice.
 
-## Design principles
-
-- **Source-first.** Every statement has `source_url` and `original_url` — no fabrication.
-- **Neutral presentation.** Timeline and indicators shown side by side. No causality claims.
-- **Strict provenance.** Data stored as-is from upstream. No transformation beyond rounding.
+Wikimedia Commons photos are credited in the app; licences vary by image.

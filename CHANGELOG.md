@@ -5,6 +5,25 @@ All notable changes to TrumpVIX are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Rewrote the README for the current v1.2 state: quick start, first-run
+  behaviour, configuration, project layout, API notes, service and security
+  guidance, troubleshooting, and refreshed limitations.
+
+### Removed
+
+- Render deployment artifacts (`render.yaml`, `Procfile`, keep-alive and
+  deploy-triggered ingestion workflows). The app needs a persistent disk and
+  an always-on process, which Render's free tier does not provide.
+
+### Fixed
+
+- `scripts/deploy.sh` uses `python3`, matching the README and working on
+  systems without a `python` alias.
+
 ## [v1.2] - 2026-11-09
 
 Media, backgrounds and mobile.
@@ -96,6 +115,7 @@ Initial local MVP.
 - Swipe/keyboard navigation, floating timeline, keyword search, date picker
   and loading animations.
 
+[Unreleased]: https://github.com/JonPinto/trumpvix/compare/v1.2...HEAD
 [v1.2]: https://github.com/JonPinto/trumpvix/compare/v1.1...v1.2
 [v1.1]: https://github.com/JonPinto/trumpvix/compare/v1.0...v1.1
 [v1.0]: https://github.com/JonPinto/trumpvix/releases/tag/v1.0
