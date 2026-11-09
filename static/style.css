@@ -23,6 +23,76 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
+  /* Stacking context so the fixed background photo sits behind the page content
+     while the body's solid colour stays visible until the photo has loaded. */
+  position: relative;
+  z-index: 0;
+}
+
+/* ── Background photo ── */
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--paper);
+}
+
+.bg-layer img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;      /* fill the screen without stretching */
+  object-position: center;
+  opacity: 0;
+  transition: opacity 1.1s ease;
+}
+
+.bg-layer.loaded img { opacity: 1; }
+
+/* Darken the photo so the dashboard stays readable over any image. The radial
+   part keeps a little more light in the middle and fades into the edges. The
+   overlay is always on top (not faded with the photo), so the photo fades in
+   already darkened instead of brightening and then dimming. */
+.bg-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 50% 30%, rgba(15, 12, 18, 0.14) 0%, rgba(15, 12, 18, 0.62) 68%, rgba(15, 12, 18, 0.86) 100%),
+    linear-gradient(180deg, rgba(15, 12, 18, 0.44) 0%, rgba(15, 12, 18, 0.76) 100%);
+}
+
+.bg-credit {
+  position: fixed;
+  left: 1rem;
+  bottom: 0.5rem;
+  z-index: 90;
+  max-width: min(28vw, 24rem);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: var(--muted);
+  opacity: 0.72;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+.bg-credit a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(203, 213, 225, 0.45);
+}
+
+.bg-credit a:hover {
+  color: var(--interactive);
+  border-bottom-color: var(--interactive);
+}
+
+@media (max-width: 1000px) {
+  .bg-credit { display: none; }
 }
 
 @keyframes fadeIn {
@@ -501,14 +571,209 @@ mark.highlight {
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--paper);
+  /* When scrolled into view, stay clear of the floating timeline bar at the bottom. */
+  scroll-margin: 1rem 0 6.5rem;
 }
 
-.statement-media img {
+/* ── Media grid ── */
+.media-grid { display: grid; gap: 3px; }
+.media-grid.count-1 { grid-template-columns: 1fr; }
+.media-grid.count-2 { grid-template-columns: 1fr 1fr; aspect-ratio: 16 / 9; }
+.media-grid.count-3 { grid-template-columns: 2fr 1fr; grid-template-rows: 1fr 1fr; aspect-ratio: 16 / 9; }
+.media-grid.count-3 > .media-tile:first-child { grid-row: 1 / 3; }
+.media-grid.count-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; aspect-ratio: 16 / 9; }
+
+.media-tile {
+  position: relative;
   display: block;
   width: 100%;
-  height: auto;
-  max-height: 400px;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  background: #000;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.media-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
+  transition: transform 0.2s ease;
+}
+
+/* A single item keeps its natural shape instead of a fixed-ratio cell. */
+.media-grid.count-1 .media-tile img { height: auto; max-height: 400px; }
+
+.media-image:hover img { transform: scale(1.03); }
+
+.media-more {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+/* ── Video tile ── */
+.media-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  padding-left: 4px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.media-video:hover .media-play,
+.media-stage:hover .media-play {
+  background: var(--interactive);
+  transform: translate(-50%, -50%) scale(1.06);
+}
+
+/* A video in the full view: poster + play button, then the progress panel, then the player. */
+.media-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 240px;
+  background: #000;
+  cursor: pointer;
+}
+
+.media-stage.loading { cursor: progress; }
+.media-stage.loading img { filter: brightness(0.5); }
+.media-stage.playing { cursor: default; }
+
+.media-stage video {
+  display: block;
+  width: 100%;
+  max-height: 65vh;
+  background: #000;
+  object-fit: contain;
+}
+
+/* Centered rather than at the bottom, so the page's floating timeline bar can't cover it. */
+.media-progress {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(320px, 80%);
+  padding: 0.9rem 1rem 0.75rem;
+  border-radius: 0.75rem;
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.media-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+}
+
+.media-progress-bar span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--interactive);
+  transition: width 0.15s linear;
+}
+
+.media-progress-text {
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+  color: #fff;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(360px, 85%);
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.media-error a { color: var(--interactive); }
+
+/* ── Full view of one image or video ── */
+.media-viewer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  background: #000;
+}
+
+.media-viewer img {
+  display: block;
+  max-width: 100%;
+  max-height: 65vh;
+  object-fit: contain;
+}
+
+.media-viewer-btn {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.media-viewer-btn:hover { background: var(--interactive); }
+.media-viewer-close { top: 0.6rem; right: 0.6rem; }
+.media-viewer-nav { top: 50%; transform: translateY(-50%); }
+.media-viewer-nav.prev { left: 0.6rem; }
+.media-viewer-nav.next { right: 0.6rem; }
+
+/* Top-left, so the page's floating timeline bar can't cover it. */
+.media-viewer-count {
+  position: absolute;
+  top: 0.85rem;
+  left: 0.85rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 0.8rem;
 }
 
 .card-links { font-size: 0.85rem; color: var(--interactive); }
@@ -662,7 +927,12 @@ mark.highlight {
   }
 }
 
+/* ── Mobile ──
+   A larger root size scales the rem-based text and spacing together; the
+   fixed-size controls are enlarged separately for comfortable tap targets. */
 @media (max-width: 640px) {
+  html { font-size: 18px; }
+
   .page-header {
     flex-direction: column;
     align-items: center;
@@ -672,7 +942,75 @@ mark.highlight {
   .header-vix { max-width: 100%; width: 100%; }
   .carousel-track .card { padding: 1.25rem 1.25rem 1rem; }
   .link-card { grid-template-columns: 1fr; }
-  .stack { padding: 1rem 4vw 4rem; }
+  .card-thumb { min-height: 130px; }
+  .stack { padding: 1rem 4vw 4.5rem; }
+
+  /* Search: field on its own row, action buttons underneath, so the bar can't
+     push the page wider than the screen. */
+  .search-bar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "icon field field field field"
+      ". . reactions refresh date";
+    align-items: center;
+    row-gap: 0.5rem;
+    column-gap: 0.55rem;
+    padding: 0.6rem 0.75rem;
+  }
+  .search-icon { grid-area: icon; width: 20px; height: 20px; }
+  .search-bar input[type="text"] {
+    grid-area: field;
+    width: 100%;
+    padding-right: 2rem;
+    font-size: 1rem;
+  }
+  .search-clear {
+    grid-area: field;
+    justify-self: end;
+    align-self: center;
+    width: 28px;
+    height: 28px;
+    font-size: 1.1rem;
+  }
+  .search-divider { display: none; }
+  .reaction-toggle-btn {
+    grid-area: reactions;
+    justify-self: start;
+    min-height: 40px;
+    padding: 0.5rem 0.8rem;
+  }
+  .reaction-toggle-btn svg { width: 20px; height: 20px; }
+  .refresh-btn { grid-area: refresh; }
+  .date-picker-btn { grid-area: date; }
+  .date-picker-btn,
+  .refresh-btn { width: 42px; height: 42px; }
+  .refresh-btn svg { width: 18px; height: 18px; }
+  .date-picker-btn svg { width: 20px; height: 20px; }
+
+  /* Stack the date above the reaction summary instead of forcing it onto one
+     line, which used to widen the whole page on narrow screens. */
+  .card-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+  }
+  .card-reaction-summary { white-space: normal; }
+
+  /* Bottom bar: direction buttons only, with comfortable tap targets. */
+  .timeline-dots { display: none; }
+  .timeline-bar { bottom: 1rem; gap: 0.9rem; padding: 0.5rem 0.7rem; }
+  .nav-btn { width: 44px; height: 44px; }
+  .nav-btn svg { width: 22px; height: 22px; }
+
+  /* Larger controls in the media viewer and reaction panels. */
+  .media-viewer-btn { width: 44px; height: 44px; font-size: 1.6rem; }
+  .media-viewer-count { font-size: 0.85rem; }
+  .reaction-scroll-btn { padding: 0.5rem 0; }
+  .reaction-metric-label { font-size: 0.7rem; }
+  .date-dropdown input[type="date"] { font-size: 0.95rem; }
+  .date-clear-btn,
+  .date-go-btn { padding: 0.5rem 0; font-size: 0.9rem; }
 
   .reaction-box {
     flex: 1 1 100%;

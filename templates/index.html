@@ -7,6 +7,8 @@
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
+    <div class="bg-layer" id="bgLayer" aria-hidden="true"><img id="bgPhoto" alt="" /></div>
+
     <header class="page-header">
       <div class="header-center">
         <img src="/static/logo.svg" alt="Logo" class="header-logo" />
@@ -56,6 +58,8 @@
         <div class="reaction-side reaction-side-right" id="reactionRight"></div>
       </div>
     </main>
+
+    <div class="bg-credit" id="bgCredit" hidden></div>
 
     <div class="timeline-bar" id="timelineBar">
       <button class="nav-btn nav-prev" id="prevBtn" aria-label="Older post">
@@ -140,6 +144,65 @@
         }
       }
 
+      // ── Background photo (Wikimedia Commons) ──
+      const bgLayer = document.getElementById("bgLayer");
+      const bgPhoto = document.getElementById("bgPhoto");
+      const bgCredit = document.getElementById("bgCredit");
+      let backgroundRequest = 0;
+      let backgroundOrientation = null;
+
+      function preferredOrientation() {
+        return window.matchMedia("(min-width: 900px)").matches ? "landscape" : "portrait";
+      }
+
+      function showBackgroundCredit(photo) {
+        const pageUrl = safeUrl(photo.page_url);
+        const licenseUrl = safeUrl(photo.license_url);
+        const artist = (photo.artist || "").trim();
+        const license = (photo.license || "").trim();
+        if (!pageUrl) {
+          bgCredit.hidden = true;
+          return;
+        }
+        const artistHtml = artist
+          ? `<a href="${escapeAttr(pageUrl)}" target="_blank" rel="noreferrer">${escapeHtml(artist)}</a>`
+          : `<a href="${escapeAttr(pageUrl)}" target="_blank" rel="noreferrer">Wikimedia Commons</a>`;
+        const licenseHtml = license
+          ? (licenseUrl
+              ? ` · <a href="${escapeAttr(licenseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(license)}</a>`
+              : ` · ${escapeHtml(license)}`)
+          : "";
+        bgCredit.innerHTML = `Photo: ${artistHtml}${licenseHtml}`;
+        bgCredit.title = `${photo.title || "Wikimedia Commons photo"} — reload for a new background`;
+        bgCredit.hidden = false;
+      }
+
+      // The solid page colour is the standby; the photo fades in once it has loaded.
+      // A preloader means a background change never replaces the current photo with a
+      // half-loaded one, and the first load shows the solid colour until it's ready.
+      async function loadBackground() {
+        const requestId = ++backgroundRequest;
+        backgroundOrientation = preferredOrientation();
+        try {
+          const res = await fetch(`/api/background?orientation=${backgroundOrientation}`, { cache: "no-store" });
+          if (!res.ok) return;
+          const photo = await res.json();
+          const url = safeUrl(photo.url);
+          if (!url || requestId !== backgroundRequest) return;
+          const preloader = new Image();
+          preloader.onload = () => {
+            if (requestId !== backgroundRequest) return;
+            bgPhoto.src = url;
+            bgLayer.classList.add("loaded");
+            showBackgroundCredit(photo);
+          };
+          preloader.onerror = () => {};
+          preloader.src = url;
+        } catch (e) {
+          // No photo: keep the solid background.
+        }
+      }
+
       function formatDateTime(iso) {
         if (!iso) return "";
         const d = new Date(iso);
@@ -185,20 +248,209 @@
         return formatPercent(value);
       }
 
+      // ── Media grid, full view and video ──
+      const MAX_GRID_TILES = 4;
+      const PLAY_ICON = `<svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>`;
+      const CLOSE_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>`;
+      let activeVideoDownload = null;  // AbortController of the in-flight video download
+      // Videos downloaded on the current card (blob: URLs keyed by post and media index), so
+      // cycling back to a video replays it without downloading again. Freed when the card changes.
+      let videoBlobUrls = new Map();
+
+      function posterImg(media) {
+        const poster = safeUrl(media.poster_url);
+        return poster ? `<img src="${escapeAttr(poster)}" alt="Video thumbnail" loading="lazy" />` : "";
+      }
+
+      function renderMediaTile(media, index, hiddenCount) {
+        const more = hiddenCount > 0 ? `<span class="media-more">+${hiddenCount}</span>` : "";
+        if (media.kind === "video") {
+          // Opens the full view and starts the video right away.
+          return `<button class="media-tile media-video" type="button" data-action="open" data-autoplay="1" data-index="${index}" aria-label="Play video">
+            ${posterImg(media)}<span class="media-play">${PLAY_ICON}</span>${more}</button>`;
+        }
+        const url = safeUrl(media.url);
+        if (!url) return "";
+        return `<button class="media-tile media-image" type="button" data-action="open" data-index="${index}" aria-label="View image">
+          <img src="${escapeAttr(url)}" alt="Post image" loading="lazy" />${more}</button>`;
+      }
+
+      function renderMediaGrid(item) {
+        const media = item.media || [];
+        if (!media.length) return "";
+        const shown = media.slice(0, MAX_GRID_TILES);
+        const hidden = media.length - shown.length;
+        const tiles = shown.map((m, i) => renderMediaTile(m, i, i === shown.length - 1 ? hidden : 0)).join("");
+        return `<div class="statement-media"><div class="media-grid count-${shown.length}">${tiles}</div></div>`;
+      }
+
+      // A video in the full view: poster and play button until played.
+      function renderVideoStage(media, index) {
+        return `<div class="media-stage" data-action="play" data-index="${index}">
+          ${posterImg(media)}<button class="media-play" type="button" aria-label="Play video">${PLAY_ICON}</button></div>`;
+      }
+
+      // Full view of one media item inside the card's media box. Prev/next cycle through all
+      // of the post's images and videos.
+      function renderMediaViewer(item, index) {
+        const media = item.media[index];
+        const total = item.media.length;
+        const nav = (target, cls, label, arrow) => (target < 0 || target >= total) ? "" :
+          `<button class="media-viewer-btn media-viewer-nav ${cls}" type="button" data-action="open" data-index="${target}" aria-label="${label}">${arrow}</button>`;
+        const content = media.kind === "video"
+          ? renderVideoStage(media, index)
+          : `<img src="${escapeAttr(safeUrl(media.url))}" alt="Post image" />`;
+        return `
+          <div class="media-viewer">
+            ${content}
+            <button class="media-viewer-btn media-viewer-close" type="button" data-action="grid" aria-label="Back to grid" title="Back to grid (Esc)">${CLOSE_ICON}</button>
+            ${nav(index - 1, "prev", "Previous", "‹")}
+            ${nav(index + 1, "next", "Next", "›")}
+            ${total > 1 ? `<span class="media-viewer-count">${index + 1} / ${total}</span>` : ""}
+          </div>`;
+      }
+
+      // Stop the video that's playing or downloading. Videos are detached so the browser
+      // doesn't keep reading a blob: URL that may be revoked next.
+      function stopVideo() {
+        if (activeVideoDownload) activeVideoDownload.abort();
+        activeVideoDownload = null;
+        carouselTrack.querySelectorAll("video").forEach(video => {
+          video.pause();
+          video.removeAttribute("src");
+          video.load();
+        });
+      }
+
+      // Stop playback and free the downloaded videos; called when the card is replaced.
+      function releaseMedia() {
+        stopVideo();
+        videoBlobUrls.forEach(url => URL.revokeObjectURL(url));
+        videoBlobUrls = new Map();
+      }
+
+      function formatMB(bytes) {
+        return (bytes / 1e6).toFixed(1);
+      }
+
+      // Bring the whole media box into view (clear of the floating timeline bar via its
+      // scroll-margin) when the full view opens or a video starts; no-op if already visible.
+      function revealMediaBox(el) {
+        el?.closest(".statement-media")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+
+      function showVideo(stage, src) {
+        stage.classList.remove("loading");
+        stage.classList.add("playing");
+        stage.innerHTML = `<video src="${src}" controls autoplay playsinline></video>`;
+        const video = stage.querySelector("video");
+        video.addEventListener("loadedmetadata", () => revealMediaBox(stage), { once: true });
+      }
+
+      // Download the video through the server (cached there for the rest of its run) with a
+      // progress bar, then play it in the full view.
+      async function playVideo(stage, item, index) {
+        const media = item.media[index];
+        const key = `${item.id}#${index}`;
+        stopVideo();
+        stage.dataset.action = "";
+
+        const downloaded = videoBlobUrls.get(key);
+        if (downloaded) {
+          showVideo(stage, downloaded);
+          return;
+        }
+
+        const controller = new AbortController();
+        activeVideoDownload = controller;
+        stage.classList.add("loading");
+        stage.innerHTML = `${posterImg(media)}
+          <div class="media-progress" role="progressbar" aria-label="Downloading video" aria-valuemin="0" aria-valuemax="100">
+            <div class="media-progress-bar"><span></span></div>
+            <div class="media-progress-text">Starting download…</div>
+          </div>`;
+        const progress = stage.querySelector(".media-progress");
+        const bar = stage.querySelector(".media-progress-bar span");
+        const label = stage.querySelector(".media-progress-text");
+
+        try {
+          const res = await fetch(`/api/video?statement=${encodeURIComponent(item.id)}&position=${media.position}`, { signal: controller.signal });
+          if (!res.ok) throw new Error(res.status === 413 ? "Video is too large to download here" : `Download failed (${res.status})`);
+          const total = Number(res.headers.get("Content-Length")) || 0;
+          const reader = res.body.getReader();
+          const chunks = [];
+          let received = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            if (total) {
+              const pct = Math.min(100, Math.round((received / total) * 100));
+              bar.style.width = `${pct}%`;
+              progress.setAttribute("aria-valuenow", String(pct));
+              label.textContent = `${formatMB(received)} / ${formatMB(total)} MB · ${pct}%`;
+            } else {
+              label.textContent = `${formatMB(received)} MB`;
+            }
+          }
+          const src = URL.createObjectURL(new Blob(chunks, { type: "video/mp4" }));
+          videoBlobUrls.set(key, src);
+          showVideo(stage, src);
+        } catch (e) {
+          if (e.name === "AbortError") return;
+          const original = safeUrl(media.url);
+          stage.classList.remove("loading");
+          stage.dataset.action = "play";
+          stage.innerHTML = `${posterImg(media)}
+            <div class="media-error">${escapeHtml(e.message || "Couldn't load the video")}.
+              ${original ? `<a href="${escapeAttr(original)}" target="_blank" rel="noreferrer">Open original</a> · ` : ""}click to retry</div>`;
+        } finally {
+          if (activeVideoDownload === controller) activeVideoDownload = null;
+        }
+      }
+
+      function showMediaGrid(box, item) {
+        stopVideo();
+        box.outerHTML = renderMediaGrid(item);
+      }
+
+      carouselTrack.addEventListener("click", (e) => {
+        if (e.target.closest("a")) return;  // links inside media (e.g. "Open original") just navigate
+        const target = e.target.closest("[data-action]");
+        if (!target || !target.dataset.action || !carouselTrack.contains(target)) return;
+        const box = target.closest(".statement-media");
+        const item = filteredStatements[currentIndex];
+        if (!box || !item || !item.media) return;
+        const index = Number(target.dataset.index);
+        const action = target.dataset.action;
+        if (action === "open") {
+          stopVideo();
+          box.innerHTML = renderMediaViewer(item, index);
+          const shown = box.querySelector(".media-viewer > img");
+          if (shown && !shown.complete) shown.addEventListener("load", () => revealMediaBox(box), { once: true });
+          else revealMediaBox(box);
+          // A video opened from the grid starts right away; cycling to one waits for play.
+          if (target.dataset.autoplay) playVideo(box.querySelector(".media-stage"), item, index);
+        } else if (action === "grid") {
+          showMediaGrid(box, item);
+        } else if (action === "play") {
+          playVideo(target, item, index);
+        }
+      });
+
       // ── Card HTML ──
       function renderCard(item) {
         const rawHtml = item.content_html || escapeHtml(item.content_text || item.title || "");
         const text = currentQuery ? highlightHtml(rawHtml, currentQuery) : rawHtml;
         const originalUrl = safeUrl(item.original_url);
         const sourceUrl = safeUrl(item.source_url);
-        const mediaUrl = safeUrl(item.media_url);
         const originalLink = originalUrl
           ? `<a href="${escapeAttr(originalUrl)}" target="_blank" rel="noreferrer">Truth Social</a>` : "";
         const sourceLink = sourceUrl
           ? `<a href="${escapeAttr(sourceUrl)}" target="_blank" rel="noreferrer">Archive</a>` : "";
         const links = [originalLink, sourceLink].filter(Boolean).join(" · ");
-        const media = mediaUrl
-          ? `<figure class="statement-media"><img src="${escapeAttr(mediaUrl)}" alt="Statement media" loading="lazy" /></figure>` : "";
+        const media = renderMediaGrid(item);
         const previews = (item.link_previews || []).map((preview) => {
           const previewUrl = safeUrl(preview.url);
           if (!previewUrl) return "";
@@ -245,6 +497,29 @@
       }
 
       // ── Swipe animation ──
+      // Key of the card on screen. Re-rendering an identical card (on resize, entering video
+      // fullscreen, or a refresh that didn't change this post) is skipped so a playing video,
+      // an open image viewer or a running download isn't interrupted.
+      let shownCardKey = null;
+
+      function cardKey(item) {
+        return JSON.stringify([item, currentQuery]);
+      }
+
+      function showCard(item) {
+        const key = cardKey(item);
+        if (key === shownCardKey && carouselTrack.querySelector(".card")) return;
+        releaseMedia();
+        carouselTrack.innerHTML = renderCard(item);
+        shownCardKey = key;
+      }
+
+      function showMessage(html) {
+        releaseMedia();
+        shownCardKey = null;
+        carouselTrack.innerHTML = html;
+      }
+
       function goToCard(newIndex, instant) {
         const total = filteredStatements.length;
         if (total === 0) return;
@@ -256,7 +531,7 @@
         currentIndex = newIndex;
 
         if (instant) {
-          carouselTrack.innerHTML = renderCard(filteredStatements[currentIndex]);
+          showCard(filteredStatements[currentIndex]);
           carouselTrack.style.transition = "none";
           carouselTrack.style.transform = "translateX(0)";
           renderDots();
@@ -267,9 +542,11 @@
         }
 
         isAnimating = true;
+        releaseMedia();
         const cardWidth = carouselViewport.offsetWidth;
         const oldCard = carouselTrack.querySelector(".card");
-        const newCardHtml = renderCard(filteredStatements[currentIndex]);
+        const newItem = filteredStatements[currentIndex];
+        const newCardHtml = renderCard(newItem);
 
         if (oldCard) {
           oldCard.style.transition = "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease";
@@ -279,6 +556,7 @@
 
         setTimeout(() => {
           carouselTrack.innerHTML = newCardHtml;
+          shownCardKey = cardKey(newItem);
           const card = carouselTrack.querySelector(".card");
           if (card) {
             card.style.transition = "none";
@@ -305,13 +583,13 @@
       function renderTimeline(items, focusId = null) {
         filteredStatements = [...items].reverse();
         if (!filteredStatements.length) {
-          carouselTrack.innerHTML = '<p class="muted" style="padding:3rem;text-align:center;">No matching statements.</p>';
+          showMessage('<p class="muted" style="padding:3rem;text-align:center;">No matching statements.</p>');
           timelineDots.innerHTML = "";
           return;
         }
         const focusIndex = focusId ? filteredStatements.findIndex(s => s.id === focusId) : -1;
         currentIndex = focusIndex >= 0 ? focusIndex : filteredStatements.length - 1;
-        carouselTrack.innerHTML = renderCard(filteredStatements[currentIndex]);
+        showCard(filteredStatements[currentIndex]);
         carouselTrack.style.transition = "none";
         carouselTrack.style.transform = "translateX(0)";
         requestAnimationFrame(() => {
@@ -529,7 +807,7 @@
           renderTimeline(statements, focusId);
           renderVixInline(await indicatorsRes.json());
         } catch (error) {
-          carouselTrack.innerHTML = '<p class="muted" style="padding:3rem;text-align:center;">API unavailable. Start the Python server.</p>';
+          showMessage('<p class="muted" style="padding:3rem;text-align:center;">API unavailable. Start the Python server.</p>');
           vixInlineEl.innerHTML = '<p class="muted">Data sources are offline.</p>';
         }
       }
@@ -677,6 +955,7 @@
           setRefreshButton("failed", "Couldn't start a refresh. Click to retry.");
           return;
         }
+        loadBackground();
         watchRefresh();
       });
 
@@ -689,6 +968,11 @@
         if (e.target === searchInput) return;
         if (e.key === "ArrowLeft") goToCard(currentIndex - 1);
         if (e.key === "ArrowRight") goToCard(currentIndex + 1);
+        if (e.key === "Escape") {
+          const viewer = carouselTrack.querySelector(".media-viewer");
+          const item = filteredStatements[currentIndex];
+          if (viewer && item) showMediaGrid(viewer.closest(".statement-media"), item);
+        }
       });
 
       // ── Touch/swipe ──
@@ -708,9 +992,11 @@
 
       window.addEventListener("resize", () => {
         if (filteredStatements.length > 0) goToCard(currentIndex, true);
+        if (preferredOrientation() !== backgroundOrientation) loadBackground();
       });
 
       loadData();
+      loadBackground();
       // The server may already be refreshing (it starts one on boot); follow it if so.
       fetchRefreshStatus().then((status) => {
         if (status.running) watchRefresh();

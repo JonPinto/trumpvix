@@ -71,6 +71,21 @@ def extract_media_from_feed(entry: feedparser.FeedParserDict) -> str | None:
     return None
 
 
+def extract_all_media(entry: feedparser.FeedParserDict) -> list[dict]:
+    """Every image/video in the feed entry, in order, with its thumbnail (a video's poster frame)."""
+    contents = entry.get("media_content") or []
+    thumbnails = entry.get("media_thumbnail") or []
+    media = []
+    for index, item in enumerate(contents):
+        kind = item.get("medium")
+        url = (item.get("url") or "").strip()
+        if kind not in ("image", "video") or not url.startswith(("http://", "https://")):
+            continue
+        poster = (thumbnails[index].get("url") or "").strip() if index < len(thumbnails) else ""
+        media.append({"kind": kind, "url": url, "poster_url": poster or None})
+    return media
+
+
 def score_media_url(url: str) -> int:
     score = 0
     if "/attachments/" in url:
@@ -155,6 +170,7 @@ def build_record(entry: feedparser.FeedParserDict) -> dict:
         "content_html": content_html,
         "content_text": content_text,
         "media_url": extract_media_from_feed(entry) or extract_first_image(content_html),
+        "media": extract_all_media(entry),
         "has_feed_media": bool(entry.get("media_content")),
         "published_at": iso_utc(parse_datetime(entry.get("published"))),
         "links": extract_links(content_html),
@@ -246,6 +262,20 @@ def main() -> None:
             else:
                 skipped += 1
                 update_existing_media(conn, record["id"], existing.get(record["id"]), record["media_url"])
+
+            # Replace rather than merge: the feed is the source of truth for a post's
+            # attachments, and this also backfills posts stored before this table existed.
+            conn.execute("DELETE FROM statement_media WHERE statement_id = ?", (record["id"],))
+            conn.executemany(
+                """
+                INSERT INTO statement_media (statement_id, position, kind, url, poster_url)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (record["id"], position, media["kind"], media["url"], media["poster_url"])
+                    for position, media in enumerate(record["media"])
+                ],
+            )
 
             for url in record["links"]:
                 conn.execute(

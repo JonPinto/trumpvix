@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -14,6 +15,8 @@ from flask import Flask, jsonify, render_template, request
 from bs4 import BeautifulSoup
 
 from db import connect, iso_utc, now_iso
+import commons_background
+import media_cache
 from series import REACTION_SERIES
 
 app = Flask(__name__, template_folder="../templates", static_folder="../static")
@@ -189,11 +192,18 @@ def prepare_statement(content_html: str) -> tuple[str, tuple[str, ...]]:
 
 @lru_cache(maxsize=4096)
 def strip_links(clean_html: str, urls: frozenset[str]) -> str:
-    """Remove links that are shown as preview cards instead, so they don't appear twice."""
+    """Remove links whose target is shown elsewhere on the card (preview card or media grid).
+
+    A paragraph left empty by the removal is dropped too, so no blank gap remains.
+    """
     soup = BeautifulSoup(clean_html, "html.parser")
     for anchor in soup.find_all("a"):
         if anchor.get("href") in urls:
+            parent = anchor.parent
             anchor.decompose()
+            if parent is not None and parent.name == "p" and not parent.get_text(strip=True) \
+                    and not parent.find(lambda tag: tag.name != "br"):
+                parent.decompose()
     return _render(soup)
 
 
@@ -263,19 +273,44 @@ def statements():
             all_links,
         ).fetchall() if all_links else []
 
+        ids = [row["id"] for row in rows]
+        media_rows = conn.execute(
+            f"""
+            SELECT statement_id, position, kind, url, poster_url
+            FROM statement_media
+            WHERE statement_id IN ({",".join("?" * len(ids))})
+            ORDER BY statement_id, position
+            """,
+            ids,
+        ).fetchall() if ids else []
+
     preview_map = {row["url"]: dict(row) for row in previews}
+    media_by_statement: dict[str, list[dict]] = {}
+    for m in media_rows:
+        media_by_statement.setdefault(m["statement_id"], []).append(
+            {"position": m["position"], "kind": m["kind"], "url": m["url"], "poster_url": m["poster_url"]}
+        )
 
     payload = []
     for row, (clean_html, links) in zip(rows, prepared):
-        previewed = frozenset(url for url in links if url in preview_map)
+        media = media_by_statement.get(row["id"])
+        if not media and row["media_url"]:
+            # Posts ingested before statement_media existed only have their first image.
+            media = [{"position": None, "kind": "image", "url": row["media_url"], "poster_url": None}]
+        media = media or []
+
+        # Links shown as a preview card or in the media grid are removed from the text.
+        media_urls = {m["url"] for m in media}
+        hidden = frozenset(url for url in links if url in preview_map or url in media_urls)
         payload.append(
             {
                 "published_at": row["published_at"],
                 "id": row["id"],
                 "title": row["title"],
                 "content_text": row["content_text"],
-                "content_html": strip_links(clean_html, previewed) if previewed else clean_html,
+                "content_html": strip_links(clean_html, hidden) if hidden else clean_html,
                 "media_url": row["media_url"],
+                "media": media,
                 "source_url": row["source_url"],
                 "original_url": row["original_url"],
                 "link_previews": [preview_map[url] for url in links if url in preview_map],
@@ -283,6 +318,34 @@ def statements():
         )
 
     return jsonify(payload)
+
+
+@app.get("/api/video")
+def video():
+    """Proxy a post's video through the per-run cache. Only URLs stored for that post are served."""
+    statement_id = request.args.get("statement", "")
+    position = request.args.get("position", type=int)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT url FROM statement_media WHERE statement_id = ? AND position = ? AND kind = 'video'",
+            (statement_id, position),
+        ).fetchone()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return media_cache.video_response(row["url"])
+
+
+@app.get("/api/background")
+def background():
+    """A random Wikimedia Commons photo of Trump, for the page background."""
+    orientation = request.args.get("orientation", "landscape")
+    photo = commons_background.random_background(orientation)
+    if not photo:
+        return jsonify({"error": "no background available"}), 503
+    response = jsonify(photo)
+    # A new photo is picked for every page load, so never let the browser reuse one.
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/indicators")
@@ -633,6 +696,9 @@ def refresh_status():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # Exit normally on SIGTERM (e.g. `kill`) so atexit cleanup, such as removing the
+    # per-run video cache, still runs.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     # Serve whatever is already stored right away and fetch fresh data in the background.
     # Set REFRESH_ON_START=0 to skip.

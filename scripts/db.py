@@ -46,6 +46,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )""",
         # Statements are filtered and sorted by publish time on every page load.
         "CREATE INDEX IF NOT EXISTS idx_statements_published_at ON statements (published_at)",
+        # Every image/video attached to a statement, in feed order. statements.media_url
+        # keeps the first displayable image as a fallback for posts ingested before this.
+        """CREATE TABLE IF NOT EXISTS statement_media (
+            statement_id TEXT NOT NULL, position INTEGER NOT NULL,
+            kind TEXT NOT NULL, url TEXT NOT NULL, poster_url TEXT,
+            PRIMARY KEY (statement_id, position),
+            FOREIGN KEY (statement_id) REFERENCES statements(id)
+        )""",
     ]:
         conn.execute(ddl)
 
