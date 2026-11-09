@@ -10,8 +10,10 @@
 
 ## Quick start
 
+Requires Python 3.12+ (tested on 3.14).
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 python scripts/init_db.py
@@ -27,7 +29,7 @@ python scripts/server.py
 
 **Data sources:**
 - **Statements** — RSS feed from [trumpstruth.org](https://trumpstruth.org/feed), stored with full provenance.
-- **Intraday prices** — yfinance (S&P 500, NASDAQ, DJIA, BTC, ETH, oil, gas, FX) at ~5-min resolution.
+- **Intraday prices** — yfinance (S&P 500, NASDAQ, DJIA, BTC, ETH, oil, gas, FX) at hourly resolution over the last 5 days.
 - **Daily indicators** — FRED CSV (VIX, dollar index, etc.).
 - **Link previews** — OpenGraph metadata from linked articles.
 
@@ -40,6 +42,7 @@ python scripts/server.py
 | Variable | Default | Description |
 |---|---|---|
 | `MVP_DB_PATH` | `data/mvp.sqlite3` | SQLite database path |
+| `PORT` | `5000` | Port for `scripts/server.py` |
 
 ## Scripts
 
@@ -87,9 +90,8 @@ python scripts/server.py
 
 ## Known issues and design limitations
 
-- **FRED upstream instability** — FRED CSV endpoints occasionally return 502/504. Daily indicators (VIX, gas, etc.) go stale until next successful pull. No retry or fallback logic.
-- **No scheduling** — ingestion is manual. No cron, no auto-refresh. Data drifts stale between runs.
-- **No deduplication** — re-running ingestion scripts can create duplicate rows in SQLite.
+- **FRED upstream instability** — FRED CSV endpoints occasionally return 502/504. Each series is retried 3 times with backoff; after that, daily indicators (VIX, gas, etc.) go stale until the next successful pull. No fallback source.
+- **No scheduling** — ingestion runs only when you run the scripts or call `/api/refresh`. No cron, no auto-refresh. Data drifts stale between runs.
 - **yfinance rate limits** — heavy or rapid requests may get throttled. No backoff or caching layer.
 - **SQLite concurrency** — single-writer. Fine for local use, but would break with concurrent ingestion + serving.
 - **No market holiday handling** — the 10-hour model assumes Mon–Fri are trading days. US holidays cause misaligned windows.

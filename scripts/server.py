@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import threading
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template, request
 from bs4 import BeautifulSoup
 
-from db import connect, iso_utc
+from db import connect, iso_utc, now_iso
 
 app = Flask(__name__, template_folder="../templates", static_folder="../static")
 
@@ -215,7 +219,6 @@ def statements():
         html = sanitize_statement_html(row["content_html"])
         soup = BeautifulSoup(html or "", "html.parser")
         urls = []
-        preview_urls = set(preview_map.keys())
         for anchor in soup.find_all("a"):
             href = (anchor.get("href") or "").strip()
             if not href:
@@ -223,7 +226,7 @@ def statements():
                 continue
             if href not in urls:
                 urls.append(href)
-            if href in preview_urls:
+            if href in preview_map:
                 anchor.decompose()
 
         payload.append(
@@ -548,15 +551,13 @@ _refresh_status = {"running": False, "last_run": None, "results": []}
 @app.get("/api/refresh")
 @app.post("/api/refresh")
 def refresh():
-    import os
-    import subprocess
-    import threading
-
     if _refresh_status["running"]:
         return jsonify({"status": "already running", "results": _refresh_status["results"]}), 202
 
+    # Mark as running before the thread starts so concurrent requests can't both launch a refresh.
+    _refresh_status["running"] = True
+
     def _run():
-        _refresh_status["running"] = True
         try:
             env = os.environ.copy()
             project_root = os.path.dirname(os.path.dirname(__file__))
@@ -564,12 +565,13 @@ def refresh():
             env["PYTHONPATH"] = scripts_dir
 
             results = []
+            python = sys.executable
             steps = [
-                ("init_db", ["python", "scripts/init_db.py"], 30),
-                ("rss", ["python", "scripts/ingest_truth_rss.py"], 120),
-                ("intraday", ["python", "scripts/ingest_intraday_alpha_vantage.py"], 300),
-                ("fred", ["python", "scripts/ingest_fred.py"], 300),
-                ("link_previews", ["python", "scripts/fetch_link_previews.py", "--limit", "30"], 120),
+                ("init_db", [python, "scripts/init_db.py"], 30),
+                ("rss", [python, "scripts/ingest_truth_rss.py"], 120),
+                ("intraday", [python, "scripts/ingest_intraday_alpha_vantage.py"], 300),
+                ("fred", [python, "scripts/ingest_fred.py"], 300),
+                ("link_previews", [python, "scripts/fetch_link_previews.py", "--limit", "30"], 120),
             ]
 
             for name, cmd, timeout in steps:
@@ -603,7 +605,5 @@ def refresh_status():
 
 
 if __name__ == "__main__":
-    import os
-
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)

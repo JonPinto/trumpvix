@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 import feedparser
@@ -132,7 +133,7 @@ def main() -> None:
             elif guid:
                 statement_id = f"rss:{guid}"
             else:
-                statement_id = f"rss:{hash(entry.get('title', ''))}"
+                statement_id = f"rss:{hashlib.sha256(entry.get('title', '').encode()).hexdigest()}"
 
             source_url = entry.get("link") or guid or original_url or ""
 

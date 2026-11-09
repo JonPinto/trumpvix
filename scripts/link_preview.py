@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 from db import now_iso
 
 USER_AGENT = "Mozilla/5.0 (compatible; MVPLinkPreview/1.0)"
+# Only the <head> metadata is needed; cap the download so large pages can't stall the fetch.
+MAX_HTML_BYTES = 2 * 1024 * 1024
 
 
 @dataclass
@@ -54,13 +56,34 @@ def _first_meta_content(soup: BeautifulSoup, attrs: Iterable[dict]) -> str | Non
 def fetch_link_preview(url: str) -> LinkPreview:
     fetched_at = now_iso()
     try:
-        resp = requests.get(
+        # stream=True fetches headers first, so non-HTML links (videos, images)
+        # are rejected without downloading their body.
+        with requests.get(
             url,
             headers={"User-Agent": USER_AGENT},
             timeout=12,
             allow_redirects=True,
-        )
-        resp.raise_for_status()
+            stream=True,
+        ) as resp:
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            if "text/html" not in content_type:
+                return LinkPreview(
+                    url=url,
+                    title=None,
+                    description=f"Unsupported content-type: {content_type}",
+                    image_url=None,
+                    site_name=None,
+                    status="non_html",
+                    fetched_at=fetched_at,
+                )
+
+            body = b""
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                body += chunk
+                if len(body) >= MAX_HTML_BYTES:
+                    break
+            final_url = resp.url
     except Exception as exc:  # noqa: BLE001 - store error status
         return LinkPreview(
             url=url,
@@ -72,19 +95,7 @@ def fetch_link_preview(url: str) -> LinkPreview:
             fetched_at=fetched_at,
         )
 
-    content_type = resp.headers.get("content-type", "")
-    if "text/html" not in content_type:
-        return LinkPreview(
-            url=url,
-            title=None,
-            description=f"Unsupported content-type: {content_type}",
-            image_url=None,
-            site_name=None,
-            status="non_html",
-            fetched_at=fetched_at,
-        )
-
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(body, "html.parser")
 
     title = _first_meta_content(
         soup,
@@ -113,7 +124,7 @@ def fetch_link_preview(url: str) -> LinkPreview:
         ),
     )
     if image_url:
-        image_url = urljoin(resp.url, image_url)
+        image_url = urljoin(final_url, image_url)
 
     site_name = _first_meta_content(
         soup,
@@ -124,7 +135,7 @@ def fetch_link_preview(url: str) -> LinkPreview:
     )
 
     return LinkPreview(
-        url=resp.url,
+        url=url,
         title=title,
         description=description,
         image_url=image_url,
