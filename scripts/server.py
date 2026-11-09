@@ -557,65 +557,100 @@ def reactions(statement_id: str):
     )
 
 
-_refresh_status = {"running": False, "last_run": None, "results": []}
+REFRESH_STEPS = [
+    ("init_db", ["scripts/init_db.py"], 30),
+    ("rss", ["scripts/ingest_truth_rss.py"], 120),
+    ("intraday", ["scripts/ingest_intraday_alpha_vantage.py"], 300),
+    ("fred", ["scripts/ingest_fred.py"], 300),
+    ("link_previews", ["scripts/fetch_link_previews.py", "--limit", "30"], 120),
+]
+
+# Shared between request threads and the refresh thread; guarded by _refresh_lock.
+_refresh_lock = threading.Lock()
+_refresh_status = {
+    "running": False,
+    "started_at": None,
+    "current_step": None,
+    "last_run": None,
+    "results": [],
+}
+
+
+def _run_step(name: str, args: list[str], timeout: int, project_root: str, env: dict) -> dict:
+    try:
+        r = subprocess.run(
+            [sys.executable, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=project_root,
+            env=env,
+        )
+        return {
+            "step": name,
+            "status": "ok" if r.returncode == 0 else "error",
+            "returncode": r.returncode,
+            "stdout": r.stdout[-500:] if r.stdout else "",
+            "stderr": r.stderr[-500:] if r.stderr else "",
+        }
+    except subprocess.TimeoutExpired:
+        return {"step": name, "status": "timeout", "returncode": -1}
+    except Exception as e:
+        return {"step": name, "status": "exception", "error": str(e)}
+
+
+def _run_refresh() -> None:
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = {**os.environ, "PYTHONPATH": os.path.join(project_root, "scripts")}
+    try:
+        for name, args, timeout in REFRESH_STEPS:
+            with _refresh_lock:
+                _refresh_status["current_step"] = name
+            result = _run_step(name, args, timeout, project_root, env)
+            # Publish each step as it finishes so the page can reload data as each source lands.
+            with _refresh_lock:
+                _refresh_status["results"].append(result)
+        with _refresh_lock:
+            _refresh_status["last_run"] = now_iso()
+    finally:
+        with _refresh_lock:
+            _refresh_status["running"] = False
+            _refresh_status["current_step"] = None
+
+
+def start_refresh() -> bool:
+    """Start a background refresh. Returns False if one is already running."""
+    with _refresh_lock:
+        if _refresh_status["running"]:
+            return False
+        _refresh_status.update(running=True, started_at=now_iso(), current_step=None, results=[])
+    threading.Thread(target=_run_refresh, daemon=True).start()
+    return True
+
+
+def refresh_status_snapshot() -> dict:
+    with _refresh_lock:
+        return {**_refresh_status, "results": list(_refresh_status["results"])}
 
 
 @app.get("/api/refresh")
 @app.post("/api/refresh")
 def refresh():
-    if _refresh_status["running"]:
-        return jsonify({"status": "already running", "results": _refresh_status["results"]}), 202
-
-    # Mark as running before the thread starts so concurrent requests can't both launch a refresh.
-    _refresh_status["running"] = True
-
-    def _run():
-        try:
-            env = os.environ.copy()
-            project_root = os.path.dirname(os.path.dirname(__file__))
-            scripts_dir = os.path.join(project_root, "scripts")
-            env["PYTHONPATH"] = scripts_dir
-
-            results = []
-            python = sys.executable
-            steps = [
-                ("init_db", [python, "scripts/init_db.py"], 30),
-                ("rss", [python, "scripts/ingest_truth_rss.py"], 120),
-                ("intraday", [python, "scripts/ingest_intraday_alpha_vantage.py"], 300),
-                ("fred", [python, "scripts/ingest_fred.py"], 300),
-                ("link_previews", [python, "scripts/fetch_link_previews.py", "--limit", "30"], 120),
-            ]
-
-            for name, cmd, timeout in steps:
-                try:
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=project_root, env=env)
-                    status = "ok" if r.returncode == 0 else "error"
-                    results.append({
-                        "step": name,
-                        "status": status,
-                        "returncode": r.returncode,
-                        "stdout": r.stdout[-500:] if r.stdout else "",
-                        "stderr": r.stderr[-500:] if r.stderr else "",
-                    })
-                except subprocess.TimeoutExpired:
-                    results.append({"step": name, "status": "timeout", "returncode": -1})
-                except Exception as e:
-                    results.append({"step": name, "status": "exception", "error": str(e)})
-
-            _refresh_status["results"] = results
-            _refresh_status["last_run"] = now_iso()
-        finally:
-            _refresh_status["running"] = False
-
-    threading.Thread(target=_run, daemon=True).start()
+    if not start_refresh():
+        return jsonify({"status": "already running", **refresh_status_snapshot()}), 202
     return jsonify({"status": "started"}), 202
 
 
 @app.get("/api/refresh/status")
 def refresh_status():
-    return jsonify(_refresh_status)
+    return jsonify(refresh_status_snapshot())
 
 
 if __name__ == "__main__":
+    # Serve whatever is already stored right away and fetch fresh data in the background.
+    # Set REFRESH_ON_START=0 to skip.
+    if os.environ.get("REFRESH_ON_START", "1") != "0":
+        start_refresh()
+
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)

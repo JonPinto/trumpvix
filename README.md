@@ -16,13 +16,20 @@ Requires Python 3.12+ (tested on 3.14).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
+python scripts/server.py
+# → http://127.0.0.1:5000
+```
+
+On start, the server serves whatever is already in the database and fetches fresh data in the background (about 10 seconds); the page fills in as each source arrives. The refresh button next to the date picker fetches the latest data again at any time.
+
+To run the ingestion steps by hand instead:
+
+```bash
 python scripts/init_db.py
 python scripts/ingest_truth_rss.py
 python scripts/ingest_intraday_alpha_vantage.py
 python scripts/ingest_fred.py
-
-python scripts/server.py
-# → http://127.0.0.1:5000
+python scripts/fetch_link_previews.py
 ```
 
 ## How it works
@@ -43,6 +50,7 @@ python scripts/server.py
 |---|---|---|
 | `MVP_DB_PATH` | `data/mvp.sqlite3` | SQLite database path |
 | `PORT` | `5000` | Port for `scripts/server.py` |
+| `REFRESH_ON_START` | `1` | Set to `0` to stop `scripts/server.py` from fetching fresh data when it starts (gunicorn never does) |
 
 ## Scripts
 
@@ -91,9 +99,9 @@ python scripts/server.py
 ## Known issues and design limitations
 
 - **FRED upstream instability** — FRED CSV endpoints occasionally return 502/504. Each series is retried 3 times with backoff; after that, daily indicators (VIX, gas, etc.) go stale until the next successful pull. No fallback source.
-- **No scheduling** — ingestion runs only when you run the scripts or call `/api/refresh`. No cron, no auto-refresh. Data drifts stale between runs.
+- **No scheduling** — data is fetched when `scripts/server.py` starts, when you press the refresh button, or when you call `/api/refresh`. No periodic auto-refresh, so data drifts stale while the server stays up.
 - **yfinance rate limits** — heavy or rapid requests may get throttled. No backoff or caching layer.
-- **SQLite concurrency** — single-writer. Fine for local use, but would break with concurrent ingestion + serving.
+- **SQLite concurrency** — single writer. The server keeps serving while a refresh writes, and ingestion steps write in short transactions, but this is not built for many concurrent writers or a multi-server deployment.
 - **No market holiday handling** — the 10-hour model assumes Mon–Fri are trading days. US holidays cause misaligned windows.
 - **No data validation** — upstream malformed data (missing prices, bad dates) passes through silently.
 - **No offline mode** — requires live internet for yfinance and RSS. No local price cache.

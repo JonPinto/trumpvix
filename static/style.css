@@ -192,7 +192,8 @@ h1 {
   border-color: var(--interactive);
 }
 
-.date-picker-btn {
+.date-picker-btn,
+.refresh-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -207,10 +208,29 @@ h1 {
   transition: all 0.15s ease;
 }
 
-.date-picker-btn:hover {
+.date-picker-btn:hover,
+.refresh-btn:hover {
   border-color: var(--interactive);
   color: var(--interactive);
   background: var(--interactive-8);
+}
+
+/* ── Refresh Button ── */
+.refresh-btn.running {
+  border-color: var(--interactive);
+  color: var(--interactive);
+  cursor: progress;
+}
+
+.refresh-btn.running svg { animation: spin 0.9s linear infinite; }
+
+.refresh-btn.failed {
+  border-color: var(--negative);
+  color: var(--negative);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .date-dropdown {
