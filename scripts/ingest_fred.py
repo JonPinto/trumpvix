@@ -7,111 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 from db import connect, now_iso
+from series import FRED_SERIES, Series, fred_indicator_id
 
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 FETCH_WORKERS = 6
-
-SERIES = [
-    {
-        "id": "fred:VIXCLS",
-        "name": "VIX",
-        "series_id": "VIXCLS",
-        "frequency": "daily",
-        "unit": "index",
-    },
-    {
-        "id": "fred:SP500",
-        "name": "S&P 500",
-        "series_id": "SP500",
-        "frequency": "daily",
-        "unit": "index",
-    },
-    {
-        "id": "fred:NASDAQCOM",
-        "name": "Nasdaq Composite",
-        "series_id": "NASDAQCOM",
-        "frequency": "daily",
-        "unit": "index",
-    },
-    {
-        "id": "fred:DJIA",
-        "name": "Dow Jones Industrial Average",
-        "series_id": "DJIA",
-        "frequency": "daily",
-        "unit": "index",
-    },
-    {
-        "id": "fred:DGS2",
-        "name": "US 2Y Treasury",
-        "series_id": "DGS2",
-        "frequency": "daily",
-        "unit": "percent",
-    },
-    {
-        "id": "fred:DGS10",
-        "name": "US 10Y Treasury",
-        "series_id": "DGS10",
-        "frequency": "daily",
-        "unit": "percent",
-    },
-    {
-        "id": "fred:DTWEXBGS",
-        "name": "Broad Dollar Index",
-        "series_id": "DTWEXBGS",
-        "frequency": "daily",
-        "unit": "index",
-    },
-    {
-        "id": "fred:DEXUSEU",
-        "name": "USD to Euro",
-        "series_id": "DEXUSEU",
-        "frequency": "daily",
-        "unit": "usd_per_eur",
-    },
-    {
-        "id": "fred:DEXJPUS",
-        "name": "Japanese Yen to USD",
-        "series_id": "DEXJPUS",
-        "frequency": "daily",
-        "unit": "yen_per_usd",
-    },
-    {
-        "id": "fred:DCOILWTICO",
-        "name": "WTI Crude Oil",
-        "series_id": "DCOILWTICO",
-        "frequency": "daily",
-        "unit": "usd_per_barrel",
-    },
-    {
-        "id": "fred:DCOILBRENTEU",
-        "name": "Brent Crude Oil",
-        "series_id": "DCOILBRENTEU",
-        "frequency": "daily",
-        "unit": "usd_per_barrel",
-    },
-    {
-        "id": "fred:DHHNGSP",
-        "name": "Natural Gas (Henry Hub)",
-        "series_id": "DHHNGSP",
-        "frequency": "daily",
-        "unit": "usd_per_mmbtu",
-    },
-    {
-        "id": "fred:GASREGCOVW",
-        "name": "Gasoline (US Regular Retail)",
-        "series_id": "GASREGCOVW",
-        "frequency": "weekly",
-        "unit": "usd_per_gallon",
-    },
-    {
-        "id": "fred:PCOPPUSDM",
-        "name": "Copper",
-        "series_id": "PCOPPUSDM",
-        "frequency": "daily",
-        "unit": "usd_per_metric_ton",
-    },
-]
-
 
 
 def fetch_csv(series_id: str, since: str | None = None) -> list[tuple[str, str]]:
@@ -154,9 +53,9 @@ def get_max_date(conn, indicator_id: str) -> str | None:
     return None
 
 
-def fetch_series(series: dict, max_date: str | None) -> tuple[list[tuple[str, str]] | None, Exception | None]:
+def fetch_series(series: Series, max_date: str | None) -> tuple[list[tuple[str, str]] | None, Exception | None]:
     try:
-        return fetch_csv(series["series_id"], since=max_date), None
+        return fetch_csv(series.series_id, since=max_date), None
     except Exception as err:  # noqa: BLE001
         return None, err
 
@@ -165,7 +64,7 @@ def main() -> None:
     ingest_time = now_iso()
 
     with connect() as conn:
-        for series in SERIES:
+        for series in FRED_SERIES:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO indicators (
@@ -173,35 +72,36 @@ def main() -> None:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    series["id"],
-                    series["name"],
-                    series["series_id"],
-                    series["frequency"],
+                    fred_indicator_id(series.series_id),
+                    series.name,
+                    series.series_id,
+                    series.fred_frequency,
                     "FRED",
-                    series["unit"],
+                    series.unit,
                     ingest_time,
                 ),
             )
-        conn.commit()
-        max_dates = {series["id"]: get_max_date(conn, series["id"]) for series in SERIES}
+        max_dates = {s.series_id: get_max_date(conn, fred_indicator_id(s.series_id)) for s in FRED_SERIES}
 
     # Download all series concurrently; the requests are latency-bound, not bandwidth-bound.
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
-        results = list(pool.map(lambda s: fetch_series(s, max_dates[s["id"]]), SERIES))
+        results = list(pool.map(lambda s: fetch_series(s, max_dates[s.series_id]), FRED_SERIES))
 
     with connect() as conn:
-        for series, (rows, err) in zip(SERIES, results):
+        for series, (rows, err) in zip(FRED_SERIES, results):
+            label = f"{series.name} ({series.series_id})"
             if err is not None:
-                print(f"{series['name']} ({series['series_id']}): fetch failed: {err}")
+                print(f"{label}: fetch failed: {err}")
                 continue
-            max_date = max_dates[series["id"]]
+            indicator_id = fred_indicator_id(series.series_id)
+            max_date = max_dates[series.series_id]
             points = []
             for date_str, value_str in rows:
                 if value_str in (".", ""):
                     continue
                 if max_date and date_str <= max_date:
                     continue
-                points.append((series["id"], date_str, float(value_str), ingest_time))
+                points.append((indicator_id, date_str, float(value_str), ingest_time))
 
             conn.executemany(
                 """
@@ -211,10 +111,7 @@ def main() -> None:
                 """,
                 points,
             )
-            print(
-                f"{series['name']} ({series['series_id']}): inserted {len(points)} rows"
-            )
-        conn.commit()
+            print(f"{label}: inserted {len(points)} rows")
 
     print("FRED ingestion complete.")
 

@@ -13,7 +13,7 @@ jobs:
         run: sleep 180
 
       - name: Start ingestion
-        run: curl -sf "${{ secrets.APP_URL }}/api/refresh"
+        run: curl -sf -X POST "${{ secrets.APP_URL }}/api/refresh"
 
       - name: Wait for completion
         run: sleep 360

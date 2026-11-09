@@ -1,38 +1,27 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
 import threading
 from datetime import datetime, time, timedelta, timezone
 from functools import lru_cache
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template, request
 from bs4 import BeautifulSoup
 
 from db import connect, iso_utc, now_iso
+from series import REACTION_SERIES
 
 app = Flask(__name__, template_folder="../templates", static_folder="../static")
+log = logging.getLogger("trumpvix")
 
 ET_ZONE = ZoneInfo("America/New_York")
 MARKET_CLOSE = time(16, 0)
 MARKET_OPEN = time(9, 30)
-
-REACTION_SERIES = [
-    "SP500",
-    "NASDAQCOM",
-    "DJIA",
-    "DTWEXBGS",
-    "DEXUSEU",
-    "DEXJPUS",
-    "DCOILWTICO",
-    "DCOILBRENTEU",
-    "DHHNGSP",
-    "GASREGCOVW",
-    "BTCUSD",
-    "ETHUSD",
-]
 
 REACTION_ORDER = {series_id: index for index, series_id in enumerate(REACTION_SERIES)}
 
@@ -548,7 +537,7 @@ def reactions(statement_id: str):
 REFRESH_STEPS = [
     ("init_db", ["scripts/init_db.py"], 30),
     ("rss", ["scripts/ingest_truth_rss.py"], 120),
-    ("intraday", ["scripts/ingest_intraday_alpha_vantage.py"], 300),
+    ("intraday", ["scripts/ingest_intraday_yfinance.py"], 300),
     ("fred", ["scripts/ingest_fred.py"], 300),
     ("link_previews", ["scripts/fetch_link_previews.py", "--limit", "30"], 120),
 ]
@@ -590,16 +579,25 @@ def _run_step(name: str, args: list[str], timeout: int, project_root: str, env: 
 def _run_refresh() -> None:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env = {**os.environ, "PYTHONPATH": os.path.join(project_root, "scripts")}
+    log.info("Refresh started")
     try:
         for name, args, timeout in REFRESH_STEPS:
             with _refresh_lock:
                 _refresh_status["current_step"] = name
+            started = monotonic()
             result = _run_step(name, args, timeout, project_root, env)
+            result["duration_s"] = round(monotonic() - started, 1)
+            if result["status"] == "ok":
+                log.info("Refresh step %s: ok (%.1fs)", name, result["duration_s"])
+            else:
+                detail = result.get("stderr") or result.get("error") or ""
+                log.warning("Refresh step %s: %s (%.1fs) %s", name, result["status"], result["duration_s"], detail.strip()[-300:])
             # Publish each step as it finishes so the page can reload data as each source lands.
             with _refresh_lock:
                 _refresh_status["results"].append(result)
         with _refresh_lock:
             _refresh_status["last_run"] = now_iso()
+        log.info("Refresh finished")
     finally:
         with _refresh_lock:
             _refresh_status["running"] = False
@@ -621,7 +619,6 @@ def refresh_status_snapshot() -> dict:
         return {**_refresh_status, "results": list(_refresh_status["results"])}
 
 
-@app.get("/api/refresh")
 @app.post("/api/refresh")
 def refresh():
     if not start_refresh():
@@ -635,6 +632,8 @@ def refresh_status():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
     # Serve whatever is already stored right away and fetch fresh data in the background.
     # Set REFRESH_ON_START=0 to skip.
     if os.environ.get("REFRESH_ON_START", "1") != "0":

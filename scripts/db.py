@@ -48,7 +48,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_statements_published_at ON statements (published_at)",
     ]:
         conn.execute(ddl)
+
+    # Migration for databases created before statements.media_url existed.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(statements)")}
+    if "media_url" not in columns:
+        conn.execute("ALTER TABLE statements ADD COLUMN media_url TEXT")
+
     conn.commit()
+
+
+def init_schema() -> None:
+    """Create or migrate the schema now, rather than lazily on the first connect()."""
+    global _schema_ready
+    _schema_ready = False
+    with connect():
+        pass
 
 
 @contextmanager

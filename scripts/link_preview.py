@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -24,12 +24,6 @@ class LinkPreview:
     status: str
     fetched_at: str
 
-
-
-def display_url_label(url: str) -> str:
-    parsed = urlparse(url)
-    host = parsed.netloc.replace("www.", "")
-    return host or url
 
 
 def is_media_attachment_url(url: str) -> bool:

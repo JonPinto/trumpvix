@@ -13,7 +13,7 @@ python scripts/ingest_truth_rss.py || echo "RSS ingestion failed (non-fatal)"
 
 # Ingest intraday data via yfinance
 echo "Ingesting intraday market data..."
-python scripts/ingest_intraday_alpha_vantage.py || echo "Intraday ingestion failed (non-fatal)"
+python scripts/ingest_intraday_yfinance.py || echo "Intraday ingestion failed (non-fatal)"
 
 # Ingest FRED daily indicators
 echo "Ingesting FRED indicators..."

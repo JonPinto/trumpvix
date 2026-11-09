@@ -27,7 +27,7 @@ To run the ingestion steps by hand instead:
 ```bash
 python scripts/init_db.py
 python scripts/ingest_truth_rss.py
-python scripts/ingest_intraday_alpha_vantage.py
+python scripts/ingest_intraday_yfinance.py
 python scripts/ingest_fred.py
 python scripts/fetch_link_previews.py
 ```
@@ -36,7 +36,7 @@ python scripts/fetch_link_previews.py
 
 **Data sources:**
 - **Statements** — RSS feed from [trumpstruth.org](https://trumpstruth.org/feed), stored with full provenance.
-- **Intraday prices** — yfinance (S&P 500, NASDAQ, DJIA, BTC, ETH, oil, gas, FX) at hourly resolution over the last 5 days.
+- **Intraday prices** — yfinance hourly bars over the last 5 days, accumulated in the DB on each refresh. Most series use an ETF/ETN as an intraday proxy (e.g. SPY for the S&P 500, USO for WTI crude, VXX for VIX); the mapping lives in `scripts/series.py`.
 - **Daily indicators** — FRED CSV (VIX, dollar index, etc.).
 - **Link previews** — OpenGraph metadata from linked articles.
 
@@ -56,13 +56,26 @@ python scripts/fetch_link_previews.py
 
 | Script | Purpose |
 |---|---|
-| `init_db.py` | Create SQLite schema |
+| `init_db.py` | Create or migrate the SQLite schema |
 | `ingest_truth_rss.py` | Pull latest posts from RSS |
-| `ingest_intraday_alpha_vantage.py` | Fetch intraday prices via yfinance |
+| `ingest_intraday_yfinance.py` | Fetch hourly prices via yfinance |
 | `ingest_fred.py` | Pull daily indicators from FRED |
 | `fetch_link_previews.py` | Fetch OpenGraph metadata for linked URLs |
 | `preview.py` | Print DB summary to terminal |
-| `server.py` | Flask dev server |
+| `server.py` | Flask server and API |
+| `series.py` | The market series: names, units, FRED ids, Yahoo tickers, which appear in reactions |
+| `db.py` | Schema, connections, timestamp helpers |
+
+## API
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/statements` | Up to 30 newest posts. Query: `days` (1–365, default 30), `date` (`YYYY-MM-DD`, UTC day), `q` (text search) |
+| `GET /api/reactions/<statement_id>` | Market reaction for one post across the reaction series |
+| `GET /api/vix?days=30` | Daily VIX from FRED (falls back to intraday VXX, labelled as a proxy) |
+| `GET /api/indicators?days=30` | All indicators with their daily points |
+| `POST /api/refresh` | Start a background data refresh (one at a time) |
+| `GET /api/refresh/status` | Refresh progress: current step and per-step results |
 
 ## v1.0 — Features delivered
 
@@ -99,7 +112,7 @@ python scripts/fetch_link_previews.py
 ## Known issues and design limitations
 
 - **FRED upstream instability** — FRED CSV endpoints occasionally return 502/504. Each series is retried 3 times with backoff; after that, daily indicators (VIX, gas, etc.) go stale until the next successful pull. No fallback source.
-- **No scheduling** — data is fetched when `scripts/server.py` starts, when you press the refresh button, or when you call `/api/refresh`. No periodic auto-refresh, so data drifts stale while the server stays up.
+- **No scheduling** — data is fetched when `scripts/server.py` starts, when you press the refresh button, or on `POST /api/refresh`. No periodic auto-refresh, so data drifts stale while the server stays up.
 - **yfinance rate limits** — heavy or rapid requests may get throttled. No backoff or caching layer.
 - **SQLite concurrency** — single writer. The server keeps serving while a refresh writes, and ingestion steps write in short transactions, but this is not built for many concurrent writers or a multi-server deployment.
 - **No market holiday handling** — the 10-hour model assumes Mon–Fri are trading days. US holidays cause misaligned windows.
@@ -107,7 +120,8 @@ python scripts/fetch_link_previews.py
 - **No offline mode** — requires live internet for yfinance and RSS. No local price cache.
 - **Single-user only** — no auth, no multi-user support, no access control.
 - **No mobile optimization** — side panels render below card on mobile, but timeline bar and some interactions may not be fully optimized for touch.
-- **Static 30-day window** — no dynamic date range selection from API. Hardcoded LIMIT 30.
+- **Static 30-post window** — the page always asks for the last 30 days, and the API returns at most 30 posts per request (no paging).
+- **Short intraday history** — Yahoo only provides 5 days of hourly bars per fetch. History builds up as you refresh, but reactions for posts older than your stored intraday history show as missing (the daily FRED fallback only applies to series with no intraday data at all).
 - **No export/backup** — no way to export data or back up the SQLite database from the UI.
 - **Logo SVG rendering** — GitHub renders SVGs in READMEs, but some tools/clients may not.
 - **Hardcoded RSS source** — locked to trumpstruth.org. No support for alternative or additional feeds.
