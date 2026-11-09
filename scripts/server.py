@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 from datetime import datetime, time, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template, request
@@ -127,7 +128,33 @@ def percent_change(start: float | None, end: float | None) -> float | None:
     return (end / start - 1) * 100
 
 
-def sanitize_statement_html(value: str | None) -> str:
+# Single-row lookups on the (series_id, ts_utc) primary key, so their cost doesn't grow
+# with the amount of stored history.
+def point_at_or_before(conn, series_id: str, ts: str) -> tuple[str, float] | None:
+    row = conn.execute(
+        "SELECT ts_utc, value FROM intraday_points WHERE series_id = ? AND ts_utc <= ? ORDER BY ts_utc DESC LIMIT 1",
+        (series_id, ts),
+    ).fetchone()
+    return (row["ts_utc"], row["value"]) if row else None
+
+
+def point_at_or_after(conn, series_id: str, ts: str) -> tuple[str, float] | None:
+    row = conn.execute(
+        "SELECT ts_utc, value FROM intraday_points WHERE series_id = ? AND ts_utc >= ? ORDER BY ts_utc ASC LIMIT 1",
+        (series_id, ts),
+    ).fetchone()
+    return (row["ts_utc"], row["value"]) if row else None
+
+
+def latest_point(conn, series_id: str) -> tuple[str, float] | None:
+    row = conn.execute(
+        "SELECT ts_utc, value FROM intraday_points WHERE series_id = ? ORDER BY ts_utc DESC LIMIT 1",
+        (series_id,),
+    ).fetchone()
+    return (row["ts_utc"], row["value"]) if row else None
+
+
+def _sanitized_soup(value: str | None) -> BeautifulSoup:
     soup = BeautifulSoup(value or "", "html.parser")
 
     for tag in soup(["script", "style"]):
@@ -149,8 +176,36 @@ def sanitize_statement_html(value: str | None) -> str:
         if tag.name not in allowed:
             tag.unwrap()
 
+    return soup
+
+
+def _render(soup: BeautifulSoup) -> str:
     body = soup.body or soup
     return "".join(str(child) for child in body.contents).strip()
+
+
+# Stored statement HTML never changes, so parsing results are cached per process
+# instead of re-running BeautifulSoup for every post on every page load.
+@lru_cache(maxsize=4096)
+def prepare_statement(content_html: str) -> tuple[str, tuple[str, ...]]:
+    """Sanitized HTML plus the unique link targets in it, in order of appearance."""
+    soup = _sanitized_soup(content_html)
+    links: list[str] = []
+    for anchor in soup.find_all("a"):
+        href = anchor["href"]
+        if href not in links:
+            links.append(href)
+    return _render(soup), tuple(links)
+
+
+@lru_cache(maxsize=4096)
+def strip_links(clean_html: str, urls: frozenset[str]) -> str:
+    """Remove links that are shown as preview cards instead, so they don't appear twice."""
+    soup = BeautifulSoup(clean_html, "html.parser")
+    for anchor in soup.find_all("a"):
+        if anchor.get("href") in urls:
+            anchor.decompose()
+    return _render(soup)
 
 
 @app.get("/")
@@ -206,43 +261,35 @@ def statements():
 
     with connect() as conn:
         rows = conn.execute(query, params).fetchall()
+        prepared = [prepare_statement(row["content_html"] or "") for row in rows]
 
+        # Only the previews for links in the posts being returned.
+        all_links = sorted({url for _, links in prepared for url in links})
         previews = conn.execute(
-            """
+            f"""
             SELECT url, title, description, image_url, site_name, status
             FROM link_previews
-            WHERE status = 'ok'
-            """
-        ).fetchall()
+            WHERE status = 'ok' AND url IN ({",".join("?" * len(all_links))})
+            """,
+            all_links,
+        ).fetchall() if all_links else []
 
     preview_map = {row["url"]: dict(row) for row in previews}
 
     payload = []
-    for row in rows:
-        html = sanitize_statement_html(row["content_html"])
-        soup = BeautifulSoup(html or "", "html.parser")
-        urls = []
-        for anchor in soup.find_all("a"):
-            href = (anchor.get("href") or "").strip()
-            if not href:
-                anchor.unwrap()
-                continue
-            if href not in urls:
-                urls.append(href)
-            if href in preview_map:
-                anchor.decompose()
-
+    for row, (clean_html, links) in zip(rows, prepared):
+        previewed = frozenset(url for url in links if url in preview_map)
         payload.append(
             {
                 "published_at": row["published_at"],
                 "id": row["id"],
                 "title": row["title"],
                 "content_text": row["content_text"],
-                "content_html": str(soup),
+                "content_html": strip_links(clean_html, previewed) if previewed else clean_html,
                 "media_url": row["media_url"],
                 "source_url": row["source_url"],
                 "original_url": row["original_url"],
-                "link_previews": [preview_map.get(url) for url in urls if url in preview_map],
+                "link_previews": [preview_map[url] for url in links if url in preview_map],
             }
         )
 
@@ -351,11 +398,6 @@ def vix():
 @app.get("/api/reactions/<path:statement_id>")
 def reactions(statement_id: str):
     with connect() as conn:
-        intraday_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='intraday_points'"
-        ).fetchone()
-        has_intraday = bool(intraday_table)
-
         statement = conn.execute(
             "SELECT id, published_at FROM statements WHERE id = ?",
             (statement_id,),
@@ -396,68 +438,14 @@ def reactions(statement_id: str):
             key=lambda row: REACTION_ORDER.get(row["series_id"], 999),
         )
 
-        # Batch fetch all intraday points for all series in one query.
-        intraday_by_series: dict[str, list[tuple[str, float]]] = {}
-        if has_intraday:
-            all_points = conn.execute(
-                f"""
-                SELECT series_id, ts_utc, value
-                FROM intraday_points
-                WHERE series_id IN ({placeholders})
-                ORDER BY series_id, ts_utc
-                """,
-                tuple(REACTION_SERIES),
-            ).fetchall()
-            for row in all_points:
-                sid = row["series_id"]
-                intraday_by_series.setdefault(sid, []).append((row["ts_utc"], row["value"]))
-
         reactions_payload = []
         for indicator in indicator_rows:
             series_id = indicator["series_id"]
 
-            if not has_intraday:
-                reactions_payload.append(
-                    {
-                        "series_id": series_id,
-                        "name": indicator["name"],
-                        "unit": indicator["unit"],
-                        "window_10h_pct": None,
-                        "window_10h_status": "missing",
-                        "since_pre_pct": None,
-                        "since_pre_status": "missing",
-                        "pre_ts": None,
-                        "t0_ts": None,
-                        "t10_ts": None,
-                        "latest_ts": None,
-                    }
-                )
-                continue
-
-            points = intraday_by_series.get(series_id, [])
-
-            def find_nearest_before(ts: str) -> tuple[str, float] | None:
-                result = None
-                for p_ts, p_val in points:
-                    if p_ts <= ts:
-                        result = (p_ts, p_val)
-                    else:
-                        break
-                return result
-
-            def find_nearest_after(ts: str) -> tuple[str, float] | None:
-                for p_ts, p_val in points:
-                    if p_ts >= ts:
-                        return (p_ts, p_val)
-                return None
-
-            def find_latest() -> tuple[str, float] | None:
-                return points[-1] if points else None
-
-            pre = find_nearest_before(published_utc)
-            t0 = find_nearest_after(start_utc)
-            t10 = find_nearest_before(end_utc)
-            latest = find_latest()
+            pre = point_at_or_before(conn, series_id, published_utc)
+            t0 = point_at_or_after(conn, series_id, start_utc)
+            t10 = point_at_or_before(conn, series_id, end_utc)
+            latest = latest_point(conn, series_id)
 
             has_intraday_points = bool(pre or t0 or t10 or latest)
 
