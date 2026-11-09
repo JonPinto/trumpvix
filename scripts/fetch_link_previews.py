@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 from db import connect, iso_utc
 from link_preview import fetch_link_preview
+
+FETCH_WORKERS = 6
 
 
 def main() -> None:
@@ -33,26 +36,30 @@ def main() -> None:
             print("No link previews to fetch.")
             return
 
-        for row in rows:
-            preview = fetch_link_preview(row["url"])
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO link_previews (
-                    url, title, description, image_url, site_name, status, fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    preview.url,
-                    preview.title,
-                    preview.description,
-                    preview.image_url,
-                    preview.site_name,
-                    preview.status,
-                    preview.fetched_at,
-                ),
-            )
-            conn.commit()
-            print(f"Fetched preview: {preview.url} [{preview.status}]")
+        # Fetch concurrently; write each result from this thread as it arrives, so
+        # finished previews are saved even if the run is cut short.
+        with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+            futures = [pool.submit(fetch_link_preview, row["url"]) for row in rows]
+            for future in as_completed(futures):
+                preview = future.result()
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO link_previews (
+                        url, title, description, image_url, site_name, status, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        preview.url,
+                        preview.title,
+                        preview.description,
+                        preview.image_url,
+                        preview.site_name,
+                        preview.status,
+                        preview.fetched_at,
+                    ),
+                )
+                conn.commit()
+                print(f"Fetched preview: {preview.url} [{preview.status}]")
 
 
 if __name__ == "__main__":

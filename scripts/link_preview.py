@@ -32,12 +32,18 @@ def display_url_label(url: str) -> str:
     return host or url
 
 
+def is_media_attachment_url(url: str) -> bool:
+    """Truth Social / archive media files (images, videos), as opposed to web pages."""
+    return "/attachments/" in url or "/media_attachments/" in url
+
+
 def extract_links(html: str | None) -> list[str]:
+    """Web links in a post, excluding the post's own media attachments (they have no preview)."""
     soup = BeautifulSoup(html or "", "html.parser")
     links: list[str] = []
     for anchor in soup.find_all("a"):
         href = (anchor.get("href") or "").strip()
-        if not href:
+        if not href or is_media_attachment_url(href):
             continue
         if href.startswith("http://") or href.startswith("https://"):
             if href not in links:

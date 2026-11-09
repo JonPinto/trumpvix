@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import csv
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
 from db import connect, now_iso
 
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+FETCH_WORKERS = 6
 
 SERIES = [
     {
@@ -112,8 +114,11 @@ SERIES = [
 
 
 
-def fetch_csv(series_id: str) -> list[tuple[str, str]]:
+def fetch_csv(series_id: str, since: str | None = None) -> list[tuple[str, str]]:
     url = FRED_URL.format(series_id=series_id)
+    if since:
+        # cosd = observation start date (inclusive); avoids re-downloading decades of history.
+        url += f"&cosd={since}"
     last_err: Exception | None = None
     for attempt in range(3):
         try:
@@ -149,6 +154,13 @@ def get_max_date(conn, indicator_id: str) -> str | None:
     return None
 
 
+def fetch_series(series: dict, max_date: str | None) -> tuple[list[tuple[str, str]] | None, Exception | None]:
+    try:
+        return fetch_csv(series["series_id"], since=max_date), None
+    except Exception as err:  # noqa: BLE001
+        return None, err
+
+
 def main() -> None:
     ingest_time = now_iso()
 
@@ -170,13 +182,19 @@ def main() -> None:
                     ingest_time,
                 ),
             )
+        conn.commit()
+        max_dates = {series["id"]: get_max_date(conn, series["id"]) for series in SERIES}
 
-            max_date = get_max_date(conn, series["id"])
-            try:
-                rows = fetch_csv(series["series_id"])
-            except Exception as err:  # noqa: BLE001
+    # Download all series concurrently; the requests are latency-bound, not bandwidth-bound.
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        results = list(pool.map(lambda s: fetch_series(s, max_dates[s["id"]]), SERIES))
+
+    with connect() as conn:
+        for series, (rows, err) in zip(SERIES, results):
+            if err is not None:
                 print(f"{series['name']} ({series['series_id']}): fetch failed: {err}")
                 continue
+            max_date = max_dates[series["id"]]
             points = []
             for date_str, value_str in rows:
                 if value_str in (".", ""):
@@ -193,10 +211,10 @@ def main() -> None:
                 """,
                 points,
             )
-            conn.commit()
             print(
                 f"{series['name']} ({series['series_id']}): inserted {len(points)} rows"
             )
+        conn.commit()
 
     print("FRED ingestion complete.")
 
