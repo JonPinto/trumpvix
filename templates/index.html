@@ -98,7 +98,7 @@
       async function fetchReactions(statementId) {
         if (reactionCache.has(statementId)) return reactionCache.get(statementId);
         try {
-          const response = await fetch(`/api/reactions/${statementId}`);
+          const response = await fetch(`/api/reactions/${encodeURIComponent(statementId)}`);
           if (response.ok) {
             const data = await response.json();
             reactionCache.set(statementId, data);
@@ -116,10 +116,29 @@
         return div.innerHTML;
       }
 
+      // escapeHtml leaves quotes alone, so attribute values need their own escaping.
+      function escapeAttr(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+          .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+
+      // Only http(s) URLs from upstream data are rendered as links or images. Quotes and
+      // parentheses are percent-encoded so the URL is also safe inside CSS url('...').
+      function safeUrl(value) {
+        try {
+          const url = new URL(value);
+          if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+          return url.href.replace(/'/g, "%27").replace(/\(/g, "%28").replace(/\)/g, "%29");
+        } catch (e) {
+          return "";
+        }
+      }
+
       function formatDateTime(iso) {
         if (!iso) return "";
         const d = new Date(iso);
-        const month = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+        const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
         const day = d.getUTCDate();
         const hours = String(d.getUTCHours()).padStart(2, "0");
         const mins = String(d.getUTCMinutes()).padStart(2, "0");
@@ -165,29 +184,36 @@
       function renderCard(item) {
         const rawHtml = item.content_html || escapeHtml(item.content_text || item.title || "");
         const text = currentQuery ? highlightHtml(rawHtml, currentQuery) : rawHtml;
-        const originalLink = item.original_url
-          ? `<a href="${item.original_url}" target="_blank" rel="noreferrer">Truth Social</a>` : "";
-        const sourceLink = item.source_url
-          ? `<a href="${item.source_url}" target="_blank" rel="noreferrer">Archive</a>` : "";
+        const originalUrl = safeUrl(item.original_url);
+        const sourceUrl = safeUrl(item.source_url);
+        const mediaUrl = safeUrl(item.media_url);
+        const originalLink = originalUrl
+          ? `<a href="${escapeAttr(originalUrl)}" target="_blank" rel="noreferrer">Truth Social</a>` : "";
+        const sourceLink = sourceUrl
+          ? `<a href="${escapeAttr(sourceUrl)}" target="_blank" rel="noreferrer">Archive</a>` : "";
         const links = [originalLink, sourceLink].filter(Boolean).join(" · ");
-        const media = item.media_url
-          ? `<figure class="statement-media"><img src="${item.media_url}" alt="Statement media" loading="lazy" /></figure>` : "";
+        const media = mediaUrl
+          ? `<figure class="statement-media"><img src="${escapeAttr(mediaUrl)}" alt="Statement media" loading="lazy" /></figure>` : "";
         const previews = (item.link_previews || []).map((preview) => {
-          const image = preview.image_url
-            ? `<div class="card-thumb" style="background-image:url('${preview.image_url}')"></div>` : "";
+          const previewUrl = safeUrl(preview.url);
+          if (!previewUrl) return "";
+          const imageUrl = safeUrl(preview.image_url);
+          const image = imageUrl
+            ? `<div class="card-thumb" style="background-image:url('${escapeAttr(imageUrl)}')"></div>` : "";
           let site = preview.site_name;
-          if (!site) { try { site = new URL(preview.url).hostname.replace("www.", ""); } catch (e) { site = ""; } }
-          const title = currentQuery ? highlightText(preview.title || preview.url, currentQuery) : (preview.title || preview.url);
+          if (!site) { try { site = new URL(previewUrl).hostname.replace("www.", ""); } catch (e) { site = ""; } }
+          const titleText = escapeHtml(preview.title || preview.url);
+          const title = currentQuery ? highlightText(titleText, currentQuery) : titleText;
           const description = preview.description
             ? `<p>${currentQuery ? highlightText(escapeHtml(preview.description), currentQuery) : escapeHtml(preview.description)}</p>` : "";
-          return `<a class="link-card" href="${preview.url}" target="_blank" rel="noreferrer">${image}<div class="link-card-body"><span class="link-card-site">${escapeHtml(site)}</span><strong>${title}</strong>${description}</div></a>`;
+          return `<a class="link-card" href="${escapeAttr(previewUrl)}" target="_blank" rel="noreferrer">${image}<div class="link-card-body"><span class="link-card-site">${escapeHtml(site)}</span><strong>${title}</strong>${description}</div></a>`;
         }).join("");
 
         return `
-          <article class="card" data-id="${item.id}">
+          <article class="card" data-id="${escapeAttr(item.id)}">
             <div class="card-header-row">
               <time class="card-time">${formatDateTime(item.published_at)}</time>
-              <span class="card-reaction-summary" id="reactionSummary-${item.id}"></span>
+              <span class="card-reaction-summary" id="reactionSummary-${escapeAttr(item.id)}"></span>
             </div>
             <div class="card-body">${text}</div>
             ${media}
@@ -410,14 +436,24 @@
 
       function updateReactionSummary(statementId, payload) {
         const el = document.getElementById(`reactionSummary-${statementId}`);
-        if (!el || !payload?.reactions?.length) return;
-        const sp = payload.reactions.find(r => r.series_id === "SP500");
-        if (!sp || sp.window_10h_status !== "ok") { el.textContent = ""; return; }
-        const pct10h = sp.window_10h_pct;
-        const pctNow = sp.since_pre_pct;
-        const cls10h = pct10h >= 0 ? "positive" : "negative";
-        const clsNow = pctNow >= 0 ? "positive" : "negative";
-        el.innerHTML = `VIX: 10H <span class="${cls10h}">${pct10h >= 0 ? "+" : ""}${pct10h.toFixed(1)}%</span> | NOW VS PRE <span class="${clsNow}">${pctNow >= 0 ? "+" : ""}${pctNow.toFixed(1)}%</span>`;
+        if (!el) return;
+        const sp = payload?.reactions?.find(r => r.series_id === "SP500");
+        const pct = (v) => {
+          if (v === null || v === undefined) return "n/a";
+          return `<span class="${v >= 0 ? "positive" : "negative"}">${v >= 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
+        };
+        const status = sp?.window_10h_status;
+        if (status === "ok") {
+          el.innerHTML = `S&amp;P 500: 10H ${pct(sp.window_10h_pct)} | NOW VS PRE ${pct(sp.since_pre_pct)}`;
+        } else if (status === "partial") {
+          el.innerHTML = `S&amp;P 500: 10H SO FAR ${pct(sp.window_10h_pct)} | NOW VS PRE ${pct(sp.since_pre_pct)}`;
+        } else if (status === "daily") {
+          el.innerHTML = `S&amp;P 500 (DAILY): 2D ${pct(sp.window_10h_pct)} | TO DATE ${pct(sp.since_pre_pct)}`;
+        } else if (status === "closed") {
+          el.textContent = "S&P 500: AWAITING MARKET OPEN";
+        } else {
+          el.textContent = "";
+        }
       }
 
       async function ensureReactionSummary() {
@@ -531,7 +567,7 @@
           currentQuery = "";
           searchInput.value = "";
           searchClear.style.display = "none";
-          loadData(null, val);
+          loadData(val);
         }
         dateDropdown.classList.remove("open");
       });

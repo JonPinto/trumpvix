@@ -35,6 +35,9 @@ REACTION_SERIES = [
 
 REACTION_ORDER = {series_id: index for index, series_id in enumerate(REACTION_SERIES)}
 
+# Links in post HTML keep only these schemes; anything else (e.g. javascript:) is unwrapped.
+SAFE_LINK_SCHEMES = ("http://", "https://", "mailto:")
+
 
 def parse_days(value: str | None) -> int:
     try:
@@ -132,7 +135,7 @@ def sanitize_statement_html(value: str | None) -> str:
 
     for anchor in soup.find_all("a"):
         href = (anchor.get("href") or "").strip()
-        if href:
+        if href.lower().startswith(SAFE_LINK_SCHEMES):
             anchor.attrs = {
                 "href": href,
                 "target": "_blank",
@@ -293,11 +296,12 @@ def vix():
     since_date = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
 
     with connect() as conn:
+        # Both FRED and the intraday ingester register a VIXCLS indicator; only FRED's has daily VIX points.
         indicator = conn.execute(
             """
             SELECT id, name, series_id, unit
             FROM indicators
-            WHERE series_id = 'VIXCLS'
+            WHERE series_id = 'VIXCLS' AND source = 'FRED'
             """
         ).fetchone()
 
@@ -321,28 +325,30 @@ def vix():
                     }
                 )
 
-        # Fallback: use intraday VXX data
+        # Fallback: intraday VXX, an ETN that tracks VIX futures. It is priced in USD and
+        # differs from the VIX index, so it is labelled as a proxy rather than as VIX.
         rows = conn.execute(
             """
             SELECT ts_utc, value
             FROM intraday_points
-            WHERE series_id = 'VIXCLS'
+            WHERE series_id = 'VIXCLS' AND ts_utc >= ?
             ORDER BY ts_utc ASC
-            """
+            """,
+            (since_date,),
         ).fetchall()
 
         points = [{"date": row["ts_utc"][:10], "value": row["value"]} for row in rows]
         return jsonify(
             {
-                "name": "VIX",
+                "name": "VXX (VIX proxy)",
                 "series_id": "VIXCLS",
-                "unit": "index",
+                "unit": "usd",
                 "points": points,
             }
         )
 
 
-@app.get("/api/reactions/<statement_id>")
+@app.get("/api/reactions/<path:statement_id>")
 def reactions(statement_id: str):
     with connect() as conn:
         intraday_table = conn.execute(
@@ -374,13 +380,19 @@ def reactions(statement_id: str):
             SELECT id, name, series_id, unit
             FROM indicators
             WHERE series_id IN ({placeholders})
-            GROUP BY series_id
+            ORDER BY series_id, source = 'FRED' DESC
             """,
             tuple(REACTION_SERIES),
         ).fetchall()
 
+        # A series can have both a FRED and an intraday indicator row. Prefer FRED's:
+        # the daily fallback below looks up indicator_points by its id.
+        indicator_by_series: dict = {}
+        for row in indicators:
+            indicator_by_series.setdefault(row["series_id"], row)
+
         indicator_rows = sorted(
-            indicators,
+            indicator_by_series.values(),
             key=lambda row: REACTION_ORDER.get(row["series_id"], 999),
         )
 
