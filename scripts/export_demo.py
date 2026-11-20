@@ -72,12 +72,27 @@ BANNER_CSS = """
   font-size: 0.82rem;
   line-height: 1.5;
   text-align: center;
+  transition: opacity 0.6s ease;
+  opacity: 1;
 }
 
 .demo-banner strong { color: var(--ink); font-weight: 600; }
-.demo-banner .demo-banner-tag { color: var(--interactive); font-weight: 700; }
 .demo-banner a { color: var(--interactive); text-decoration: none; }
 .demo-banner a:hover { text-decoration: underline; }
+.demo-banner-short { display: none; }
+
+/* After the first 30 seconds it fades back to a short label... */
+.demo-banner.collapsed { opacity: 0.35; }
+.demo-banner.collapsed .demo-banner-full { display: none; }
+.demo-banner.collapsed .demo-banner-short { display: inline; }
+
+/* ...and comes back to full text and opacity on hover or focus. */
+.demo-banner.collapsed:hover,
+.demo-banner.collapsed:focus-within { opacity: 1; }
+.demo-banner.collapsed:hover .demo-banner-full,
+.demo-banner.collapsed:focus-within .demo-banner-full { display: inline; }
+.demo-banner.collapsed:hover .demo-banner-short,
+.demo-banner.collapsed:focus-within .demo-banner-short { display: none; }
 
 @media (max-width: 640px) {
   .demo-banner { font-size: 0.76rem; padding: 0.55rem 0.75rem; }
@@ -314,18 +329,29 @@ DEMO_JS = r"""// Static-snapshot shim: answers the dashboard's /api/* calls from
     return realFetch(input, init);
   };
 
-  function initUi() {
+  function initBanner() {
     const banner = document.getElementById("demoBanner");
-    if (banner) {
-      const link = snap.repo_url || "https://github.com/JonPinto/trumpvix";
-      const label = link.replace(/^https?:\/\//, "").replace(/\/$/, "");
-      banner.innerHTML =
-        '<span class="demo-banner-tag">Demo snapshot ' + snap.app_version + '</span> · ' +
-        'snapshot ' + snap.snapshot_version + ' — data up to date as of <strong>' +
-        snap.data_as_of + '</strong>. This is a static snapshot; the full app with a ' +
-        'live, updating database is at <a href="' + link + '" target="_blank" ' +
-        'rel="noreferrer">' + label + '</a>.';
-    }
+    if (!banner) return;
+    const link = snap.repo_url || "https://github.com/JonPinto/trumpvix";
+    const label = link.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    banner.innerHTML =
+      '<span class="demo-banner-short">Demo snapshot ' + snap.app_version +
+        ' · ' + snap.snapshot_version + '</span>' +
+      '<span class="demo-banner-full">Demo snapshot <strong>' + snap.app_version +
+        '</strong> · snapshot ' + snap.snapshot_version + ' — static data as of <strong>' +
+        snap.data_as_of + '</strong>. Full app: ' +
+        '<a href="' + link + '" target="_blank" rel="noreferrer">' + label + '</a></span>';
+    // Fully visible for the first 30 seconds, then it fades back to a short label.
+    setTimeout(() => banner.classList.add("collapsed"), 30000);
+    // Touch devices have no hover; a tap toggles it instead.
+    banner.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      banner.classList.toggle("collapsed");
+    });
+  }
+
+  function initUi() {
+    initBanner();
     // The refresh button has nothing to talk to in the snapshot.
     const refreshBtn = document.getElementById("refreshBtn");
     if (refreshBtn) {
