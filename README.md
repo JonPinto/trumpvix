@@ -20,6 +20,8 @@ TrumpVIX pulls posts from the [trumpstruth.org](https://trumpstruth.org) RSS fee
 
 Packaging as a standalone desktop or mobile app is not implemented yet. This README covers running from source.
 
+A read-only **static demo** — the same frontend with the latest data baked in and no backend — lives in [`trumpvix-demo`](https://github.com/JonPinto/trumpvix-demo) and is deployed with Netlify. See [Static demo](#static-demo).
+
 <p align="center">
   <img src="docs/dashboard-desktop.jpg" alt="TrumpVIX dashboard showing a statement card, the 12 market reaction panels, the VIX sparkline and a Wikimedia Commons background" width="100%">
 </p>
@@ -142,6 +144,7 @@ scripts/
   init_db.py                  Create or migrate the schema
   deploy.sh                   Run the full ingestion pipeline once
   preview.py                  Print a DB summary to the terminal
+  export_demo.py              Build the static demo snapshot (dist-demo/)
 templates/index.html          Single-page frontend
 static/                       CSS and logo
 data/                         SQLite database (created at runtime, gitignored)
@@ -161,6 +164,7 @@ Run these with the virtualenv active, from the repo root.
 | `scripts/fetch_link_previews.py` | Fetch OpenGraph previews (`--limit`, `--refresh-days`) |
 | `scripts/deploy.sh` | Run all ingestion steps once, in order |
 | `scripts/preview.py` | Print statement/indicator counts and the latest rows |
+| `scripts/export_demo.py` | Build the static demo snapshot into `dist-demo/` |
 
 To ingest by hand instead of using the server's refresh:
 
@@ -211,6 +215,25 @@ Use **one worker**. Refresh status and the Commons background pool live in proce
 A refresh on start is only wired into `scripts/server.py`, so under gunicorn either call `POST /api/refresh` or schedule it with cron/systemd.
 
 The app needs a **persistent disk** for SQLite and an **always-on process**. Free PaaS tiers that sleep or use ephemeral filesystems will lose data or cold-start on every visit.
+
+## Static demo
+
+[`trumpvix-demo`](https://github.com/JonPinto/trumpvix-demo) is a read-only static snapshot of the dashboard: the same frontend, with the latest data baked in, served with no backend. It is deployed with Netlify.
+
+Generate it with:
+
+```bash
+python scripts/export_demo.py          # writes dist-demo/
+```
+
+The snapshot answers the page's `/api/*` calls from `snapshot.js` through a small `demo.js` shim:
+
+- `/api/statements` serves the baked posts; search and the date picker filter them client-side.
+- `/api/reactions/<id>`, `/api/vix` and `/api/background` are answered from the snapshot; the background is picked at random from a baked pool.
+- `/api/refresh` is a no-op and the refresh button is hidden.
+- Video tiles open the original source in a new tab (there is no server to proxy through).
+
+The demo repository is generated output. To refresh it, re-run the script and push `dist-demo/` there.
 
 ## Security
 

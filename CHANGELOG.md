@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/export_demo.py`, which builds a read-only static snapshot of the
+  dashboard (frontend plus baked data) into `dist-demo/` for the
+  [demo site](https://github.com/JonPinto/trumpvix-demo).
+
 ### Changed
 
 - Rewrote the README for the current v1.2 state: quick start, first-run
