@@ -229,7 +229,8 @@ python scripts/export_demo.py          # writes dist-demo/
 The snapshot answers the page's `/api/*` calls from `snapshot.js` through a small `demo.js` shim:
 
 - `/api/statements` serves the baked posts; search and the date picker filter them client-side.
-- `/api/reactions/<id>`, `/api/vix` and `/api/background` are answered from the snapshot; the background is picked at random from a baked pool.
+- `/api/reactions/<id>` and `/api/vix` are answered from the snapshot.
+- `/api/background` fetches a fresh photo from Wikimedia Commons live in the browser on every page load (the Commons API allows CORS); the baked pool is a fallback if Commons is unreachable.
 - `/api/refresh` is a no-op and the refresh button is hidden.
 - Video tiles open the original source in a new tab (there is no server to proxy through).
 
