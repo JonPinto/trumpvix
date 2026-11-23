@@ -382,6 +382,8 @@ NETLIFY_TOML = """[build]
 
 README_TEMPLATE = """# TrumpVIX — Demo Snapshot
 
+**Live site: <https://trumpvix-sh.netlify.app/>**
+
 **This is a static, read-only demo snapshot of [TrumpVIX](https://github.com/JonPinto/trumpvix).**
 
 It is **not** the live application. Every post, market figure and reaction shown here was

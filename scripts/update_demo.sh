@@ -92,7 +92,9 @@ else
 fi
 
 # Move the snapshot tag to this commit (re-running the same day updates it).
-git tag -f "$TAG" -m "Snapshot $SNAP_VERSION — app $APP_VERSION, data as of $DATA_AS_OF"
+git -c user.name="${GIT_AUTHOR_NAME:-JonPinto}" \
+    -c user.email="${GIT_AUTHOR_EMAIL:-JonPinto@users.noreply.github.com}" \
+    tag -f "$TAG" -m "Snapshot $SNAP_VERSION — app $APP_VERSION, data as of $DATA_AS_OF"
 
 if [ "$PUSH" = "1" ]; then
   git push origin HEAD

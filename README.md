@@ -20,7 +20,7 @@ TrumpVIX pulls posts from the [trumpstruth.org](https://trumpstruth.org) RSS fee
 
 Packaging as a standalone desktop or mobile app is not implemented yet. This README covers running from source.
 
-A read-only **static demo** — the same frontend with the latest data baked in and no backend — lives in [`trumpvix-demo`](https://github.com/JonPinto/trumpvix-demo) and is deployed with Netlify. See [Static demo](#static-demo).
+A read-only **static demo** is live at <https://trumpvix-sh.netlify.app/> — the same frontend with the latest data baked in and no backend. Its source is [`trumpvix-demo`](https://github.com/JonPinto/trumpvix-demo). See [Static demo](#static-demo).
 
 <p align="center">
   <img src="docs/dashboard-desktop.jpg" alt="TrumpVIX dashboard showing a statement card, the 12 market reaction panels, the VIX sparkline and a Wikimedia Commons background" width="100%">
@@ -220,7 +220,7 @@ The app needs a **persistent disk** for SQLite and an **always-on process**. Fre
 
 ## Static demo
 
-[`trumpvix-demo`](https://github.com/JonPinto/trumpvix-demo) is a read-only static snapshot of the dashboard: the same frontend, with the latest data baked in, served with no backend. It is deployed with Netlify.
+[`trumpvix-demo`](https://github.com/JonPinto/trumpvix-demo) is a read-only static snapshot of the dashboard, live at <https://trumpvix-sh.netlify.app/>: the same frontend, with the latest data baked in, served with no backend. It is deployed with Netlify.
 
 Generate it with:
 
