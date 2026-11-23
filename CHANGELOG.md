@@ -37,6 +37,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/deploy.sh` uses `python3`, matching the README and working on
   systems without a `python` alias.
 
+### Security
+
+- The dev server binds `127.0.0.1` by default; `HOST=0.0.0.0` opts into serving
+  the LAN.
+- `POST /api/refresh` is now a local control: rejected for other hosts
+  (`REFRESH_ALLOW_REMOTE=1` overrides), rejected when the request comes from
+  another site (CSRF), and rate-limited by `REFRESH_MIN_INTERVAL`. The
+  `/api/refresh/status` payload adds `can_refresh` and the frontend hides the
+  button for clients that may not refresh.
+- Outbound fetches of URLs taken from post content (link previews, status-page
+  scraping, the video proxy) now go through `scripts/net_guard.py`, which blocks
+  non-http(s) schemes and hosts resolving to private, loopback, link-local or
+  reserved addresses — re-checked at every redirect hop.
+- Post HTML sanitization strips attributes from `p`/`br`, closing a stored-XSS
+  path from feed HTML, and the search highlight no longer re-inserts unescaped
+  text.
+- Every response carries `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy` and a Content-Security-Policy; the
+  static demo sets the same headers via `netlify.toml`.
+- The per-run video cache is capped in total size (`VIDEO_CACHE_MAX_BYTES`,
+  default 2 GB), and subprocess output is only returned to local clients.
+- Added a pytest suite (`tests/`) for the sanitizer, SSRF guard, refresh gating
+  and cache cap, plus `requirements-dev.txt`.
+
 ## [v1.2] - 2026-11-09
 
 Media, backgrounds and mobile.

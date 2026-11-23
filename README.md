@@ -67,7 +67,7 @@ On first run the server creates `data/mvp.sqlite3`, starts a background refresh,
 
 If the page says "API unavailable", the server is not running or is on a different port.
 
-> The dev server listens on `0.0.0.0`, not just localhost, and has no authentication. Anyone on your network can reach it. See [Security](#security).
+> The dev server listens on **127.0.0.1** by default, so only this machine can reach it. There is still no login: to serve other devices on your network, start it with `HOST=0.0.0.0` and read [Security](#security) first.
 
 ## How it works
 
@@ -117,13 +117,17 @@ The database is created automatically and is gitignored. To start over, stop the
 | Variable | Default | Read by | Description |
 |---|---|---|---|
 | `MVP_DB_PATH` | `data/mvp.sqlite3` | server and scripts | SQLite database path |
+| `HOST` | `127.0.0.1` | `scripts/server.py` | Interface to bind. Set `0.0.0.0` to serve the LAN |
 | `PORT` | `5000` | `scripts/server.py` | HTTP port for the dev server |
 | `REFRESH_ON_START` | `1` | `scripts/server.py` | Set to `0` to skip the refresh on startup |
+| `REFRESH_ALLOW_REMOTE` | `0` | `scripts/server.py` | Set to `1` to let other hosts trigger a refresh |
+| `REFRESH_MIN_INTERVAL` | `300` | `scripts/server.py` | Minimum seconds between HTTP-triggered refreshes (`0` disables) |
+| `VIDEO_CACHE_MAX_BYTES` | `2147483648` | `media_cache.py` | Total size cap for the per-run video cache (`0` disables) |
 
-`PORT` and `REFRESH_ON_START` are read in the `__main__` block of `scripts/server.py`. Under gunicorn, trigger a refresh with `POST /api/refresh` instead.
+These are read at startup. `HOST`, `PORT` and `REFRESH_ON_START` live in the `__main__` block of `scripts/server.py`; under gunicorn, bind with `--bind` and trigger a refresh with `POST /api/refresh` instead.
 
 ```bash
-PORT=5001 REFRESH_ON_START=0 python scripts/server.py
+HOST=0.0.0.0 PORT=5001 REFRESH_ON_START=0 python scripts/server.py
 ```
 
 ## Project layout
@@ -139,6 +143,7 @@ scripts/
   ingest_fred.py              Daily indicators from FRED
   fetch_link_previews.py      OpenGraph preview fetcher
   link_preview.py             OpenGraph parsing helpers
+  net_guard.py                SSRF guard for outbound fetches
   commons_background.py       Commons search, filtering and background pool
   media_cache.py              Per-run video cache for /api/video
   init_db.py                  Create or migrate the schema
@@ -148,6 +153,7 @@ scripts/
   update_demo.sh              Export, publish and tag the demo snapshot
 templates/index.html          Single-page frontend
 static/                       CSS and logo
+tests/                        Pytest suite (security and helpers)
 data/                         SQLite database (created at runtime, gitignored)
 ```
 
@@ -178,6 +184,15 @@ python scripts/ingest_fred.py
 python scripts/fetch_link_previews.py --limit 30
 ```
 
+## Tests
+
+The security-relevant helpers (HTML sanitizer, SSRF guard, refresh gating, cache cap) have a pytest suite:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
+
 ## API
 
 The server returns JSON. There is no authentication.
@@ -191,8 +206,8 @@ The server returns JSON. There is no authentication.
 | `GET /api/background?orientation=landscape\|portrait` | Random Commons photo; the pool is cached for 6 hours |
 | `GET /api/vix?days=30` | VIX: FRED's daily closes, extended with the intraday `^VIX` index when FRED lags a day behind |
 | `GET /api/indicators?days=30` | All indicators with daily points |
-| `POST /api/refresh` | Start a background refresh; returns 202 |
-| `GET /api/refresh/status` | Current step, per-step results and last run time |
+| `POST /api/refresh` | Start a background refresh: 202 started, 403 not allowed from this client, 429 too soon |
+| `GET /api/refresh/status` | Current step, per-step results, last run, and `can_refresh` for this client |
 
 Notes:
 
@@ -201,6 +216,8 @@ Notes:
 - `statement_id` uses a path converter, so IDs containing `/` work.
 - `/api/video` only serves videos stored for that statement and position; otherwise 404.
 - `/api/background` returns 503 if Commons is unavailable; the page keeps its solid colour.
+- `/api/refresh` only works from the server machine unless `REFRESH_ALLOW_REMOTE=1`, rejects requests from other sites (CSRF), and is rate-limited by `REFRESH_MIN_INTERVAL`.
+- `/api/refresh/status` reports `can_refresh`, which hides the button for clients that may not refresh; subprocess output is only included for local requests.
 
 ## Running as a service
 
@@ -213,6 +230,8 @@ MVP_DB_PATH=/var/lib/trumpvix/mvp.sqlite3 \
 ```
 
 Use **one worker**. Refresh status and the Commons background pool live in process memory; multiple workers would each run their own refresh and return inconsistent state. Put a reverse proxy with TLS in front if the app is reachable from other machines.
+
+Behind a same-host proxy every request looks local, so the refresh endpoint stays disabled for proxied clients: trigger it from the server itself, or set `REFRESH_ALLOW_REMOTE=1` and protect the endpoint at the proxy.
 
 A refresh on start is only wired into `scripts/server.py`, so under gunicorn either call `POST /api/refresh` or schedule it with cron/systemd.
 
@@ -246,12 +265,25 @@ The demo repository is generated output: `scripts/update_demo.sh` refreshes it a
 
 ## Security
 
-This is a single-user, local-first app. Before exposing it beyond your machine:
+TrumpVIX is a single-user, local-first app with **no login**. Running it on your own machine is the supported setup; anything beyond that needs a trust boundary in front of it.
 
-- There is no login. Anyone who can reach the port can read the data and trigger refreshes.
-- The dev server binds to `0.0.0.0`. Use a host firewall, or run gunicorn on `127.0.0.1` behind a reverse proxy.
-- Put authentication and TLS in front (for example Caddy basic auth, or Cloudflare Access).
-- Do not expose `/api/refresh` to untrusted networks without protection.
+Built-in controls:
+
+- **Localhost by default.** The dev server binds `127.0.0.1`, so only this machine can reach it. `HOST=0.0.0.0` opts into serving the LAN.
+- **Refresh is a local control.** `POST /api/refresh` only works from the server machine (unless `REFRESH_ALLOW_REMOTE=1`), rejects cross-site requests (CSRF), and is rate-limited by `REFRESH_MIN_INTERVAL`. Other clients get `can_refresh: false` and the button is hidden.
+- **SSRF guard.** URLs taken from post content (link previews, status pages, the video proxy) are fetched through [`scripts/net_guard.py`](scripts/net_guard.py), which refuses non-http(s) schemes and any host resolving to a private, loopback, link-local or reserved address — at every redirect hop.
+- **Content handling.** Post HTML is sanitized to `p`/`br`/`a` with attributes stripped, links limited to http(s)/mailto, and the frontend escapes everything else.
+- **Response headers.** `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` and a Content-Security-Policy are set on every response.
+- **No API keys.** Every data source is keyless, so there are no credentials to leak. If a keyed API is ever added, keep the key server-side only and never in the static demo.
+
+| Where it runs | What to do |
+|---|---|
+| This machine only (default) | Nothing — this is the supported setup. |
+| Your LAN (`HOST=0.0.0.0`) | Fine for trusted networks. Leave refresh local, or set `REFRESH_ALLOW_REMOTE=1` if others should refresh too. A host firewall is a good idea. |
+| VPN (Tailscale, WireGuard) | Preferred way to reach it remotely: no public exposure and no extra auth needed. |
+| Public internet | Put a reverse proxy with TLS and authentication in front (e.g. Caddy basic auth, or Cloudflare Access), run gunicorn bound to `127.0.0.1`, and block `/api/refresh` at the proxy. |
+
+There is no rate limiting on the read-only endpoints and no multi-user support. The data is public and identical for everyone, which is why a shared instance is fine once an authenticating proxy sits in front of it.
 
 ## Troubleshooting
 
