@@ -404,29 +404,24 @@ def vix():
             """
         ).fetchone()
 
+        daily_points: list[dict] = []
         if indicator:
-            points = conn.execute(
-                """
-                SELECT date, value
-                FROM indicator_points
-                WHERE indicator_id = ? AND date >= ?
-                ORDER BY date ASC
-                """,
-                (indicator["id"], since_date),
-            ).fetchall()
-            if points:
-                return jsonify(
-                    {
-                        "name": indicator["name"],
-                        "series_id": indicator["series_id"],
-                        "unit": indicator["unit"],
-                        "points": [{"date": row["date"], "value": row["value"]} for row in points],
-                    }
-                )
+            daily_points = [
+                {"date": row["date"], "value": row["value"]}
+                for row in conn.execute(
+                    """
+                    SELECT date, value
+                    FROM indicator_points
+                    WHERE indicator_id = ? AND date >= ?
+                    ORDER BY date ASC
+                    """,
+                    (indicator["id"], since_date),
+                ).fetchall()
+            ]
 
-        # Fallback: intraday VXX, an ETN that tracks VIX futures. It is priced in USD and
-        # differs from the VIX index, so it is labelled as a proxy rather than as VIX.
-        rows = conn.execute(
+        # Intraday ^VIX (the index itself). FRED publishes the daily close a day late,
+        # so this keeps the newest value current.
+        intraday_rows = conn.execute(
             """
             SELECT ts_utc, value
             FROM intraday_points
@@ -436,15 +431,36 @@ def vix():
             (since_date,),
         ).fetchall()
 
-        points = [{"date": row["ts_utc"][:10], "value": row["value"]} for row in rows]
+    # Collapse the intraday bars to one value per day: the last bar of that day.
+    intraday_by_day: dict[str, float] = {}
+    for row in intraday_rows:
+        intraday_by_day[row["ts_utc"][:10]] = row["value"]
+
+    if daily_points:
+        # Extend FRED's daily line with any intraday day newer than its last close, so the
+        # header never shows a stale value while FRED lags behind.
+        last_daily = daily_points[-1]["date"]
+        for day in sorted(d for d in intraday_by_day if d > last_daily):
+            daily_points.append({"date": day, "value": intraday_by_day[day]})
         return jsonify(
             {
-                "name": "VXX (VIX proxy)",
-                "series_id": "VIXCLS",
-                "unit": "usd",
-                "points": points,
+                "name": indicator["name"],
+                "series_id": indicator["series_id"],
+                "unit": indicator["unit"],
+                "points": daily_points,
             }
         )
+
+    # No FRED history yet: show the intraday index on its own.
+    points = [{"date": day, "value": value} for day, value in sorted(intraday_by_day.items())]
+    return jsonify(
+        {
+            "name": "VIX",
+            "series_id": "VIXCLS",
+            "unit": "index",
+            "points": points,
+        }
+    )
 
 
 @app.get("/api/reactions/<path:statement_id>")

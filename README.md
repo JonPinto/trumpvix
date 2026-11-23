@@ -81,7 +81,7 @@ If the page says "API unavailable", the server is not running or is on a differe
 | OpenGraph | Link previews | Title, description, image, site name |
 | [Wikimedia Commons](https://commons.wikimedia.org/) | Page background | Landscape on desktop, portrait on mobile; credited in-app |
 
-Intraday proxies are defined in [`scripts/series.py`](scripts/series.py) — for example SPY for the S&P 500, QQQ for the Nasdaq, USO for WTI and VXX for the VIX fallback. Bitcoin and Ethereum use their Yahoo tickers directly.
+Intraday proxies are defined in [`scripts/series.py`](scripts/series.py) — for example SPY for the S&P 500, QQQ for the Nasdaq, USO for WTI and ^VIX for the VIX. Bitcoin and Ethereum use their Yahoo tickers directly.
 
 ### Reaction model
 
@@ -189,7 +189,7 @@ The server returns JSON. There is no authentication.
 | `GET /api/reactions/<statement_id>` | Reaction for one post across the 12 reaction series |
 | `GET /api/video?statement=<id>&position=<n>` | Proxy and cache a post's video (max 500 MB) |
 | `GET /api/background?orientation=landscape\|portrait` | Random Commons photo; the pool is cached for 6 hours |
-| `GET /api/vix?days=30` | Daily VIX from FRED, or VXX intraday as a labelled proxy |
+| `GET /api/vix?days=30` | VIX: FRED's daily closes, extended with the intraday `^VIX` index when FRED lags a day behind |
 | `GET /api/indicators?days=30` | All indicators with daily points |
 | `POST /api/refresh` | Start a background refresh; returns 202 |
 | `GET /api/refresh/status` | Current step, per-step results and last run time |

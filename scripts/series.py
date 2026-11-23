@@ -28,8 +28,9 @@ SERIES: list[Series] = [
     Series("GASREGCOVW", "Gasoline (US Regular Retail)", "usd_per_gallon", "weekly", "UGA", True),
     Series("BTCUSD", "Bitcoin", "usd", None, "BTC-USD", True),
     Series("ETHUSD", "Ethereum", "usd", None, "ETH-USD", True),
-    # VXX is an ETN on VIX futures, used only as the VIX chart's fallback.
-    Series("VIXCLS", "VIX", "index", "daily", "VXX", False),
+    # FRED's daily VIXCLS is authoritative but published a day late, so the VIX
+    # index itself (^VIX) is ingested intraday to keep the chart's newest value current.
+    Series("VIXCLS", "VIX", "index", "daily", "^VIX", False),
     Series("DGS2", "US 2Y Treasury", "percent", "daily", None, False),
     Series("DGS10", "US 10Y Treasury", "percent", "daily", None, False),
     Series("PCOPPUSDM", "Copper", "usd_per_metric_ton", "monthly", None, False),

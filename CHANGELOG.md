@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The header VIX no longer lags a day behind. It now ingests the `^VIX` index
+  intraday and extends FRED's daily closes with the newest intraday value, so
+  the chart is current even when FRED has not published the latest close. The
+  old `VXX` proxy (a VIX-futures ETN) is no longer used.
 - `scripts/deploy.sh` uses `python3`, matching the README and working on
   systems without a `python` alias.
 
