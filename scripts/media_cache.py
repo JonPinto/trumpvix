@@ -15,9 +15,15 @@ import threading
 import requests
 from flask import Response, jsonify, send_file
 
+import net_guard
+
 MAX_VIDEO_BYTES = 500 * 1024 * 1024
 CHUNK_BYTES = 256 * 1024
 DIR_PREFIX = "trumpvix-media-"
+try:
+    MAX_CACHE_BYTES = int(os.environ.get("VIDEO_CACHE_MAX_BYTES", str(2 * 1024**3)))
+except ValueError:
+    MAX_CACHE_BYTES = 2 * 1024**3
 
 _cache_dir: str | None = None
 _cache_dir_lock = threading.Lock()
@@ -61,6 +67,35 @@ def _lock_for(url: str) -> threading.Lock:
         return _url_locks.setdefault(url, threading.Lock())
 
 
+def _enforce_cache_cap() -> None:
+    """Keep the cache under MAX_CACHE_BYTES by evicting the oldest videos."""
+    if MAX_CACHE_BYTES <= 0:
+        return
+    root = cache_dir()
+    files: list[tuple[float, int, str]] = []
+    total = 0
+    for name in os.listdir(root):
+        if not name.endswith(".mp4"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        files.append((stat.st_mtime, stat.st_size, path))
+        total += stat.st_size
+    if total <= MAX_CACHE_BYTES:
+        return
+    for _, size, path in sorted(files):
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        total -= size
+        if total <= MAX_CACHE_BYTES:
+            break
+
+
 def video_response(url: str) -> Response:
     """Serve a video from the cache, or stream it from upstream while caching it."""
     path = os.path.join(cache_dir(), hashlib.sha256(url.encode()).hexdigest() + ".mp4")
@@ -68,9 +103,10 @@ def video_response(url: str) -> Response:
         return send_file(path, mimetype="video/mp4", conditional=True, max_age=0)
 
     try:
-        upstream = requests.get(url, stream=True, timeout=(10, 60))
+        # URLs come from post media; safe_get refuses internal targets (SSRF).
+        upstream = net_guard.safe_get(url, stream=True, timeout=(10, 60))
         upstream.raise_for_status()
-    except requests.RequestException as err:
+    except (requests.RequestException, net_guard.BlockedURL) as err:
         return jsonify({"error": f"couldn't fetch video: {err}"}), 502
 
     length = int(upstream.headers.get("Content-Length") or 0)
@@ -103,6 +139,7 @@ def video_response(url: str) -> Response:
         try:
             if state["complete"] and (not length or state["bytes"] == length):
                 os.replace(part_path, path)
+                _enforce_cache_cap()
             else:
                 os.remove(part_path)
         except OSError:

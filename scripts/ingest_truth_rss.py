@@ -9,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from dateutil import parser
 
+import net_guard
 from db import connect, iso_utc
 from link_preview import extract_links, is_media_attachment_url
 
@@ -101,13 +102,13 @@ def score_media_url(url: str) -> int:
 
 def extract_media_from_status_page(status_url: str) -> str | None:
     try:
-        resp = requests.get(
+        resp = net_guard.safe_get(
             status_url,
             headers={"User-Agent": USER_AGENT},
             timeout=15,
         )
         resp.raise_for_status()
-    except requests.RequestException:
+    except (requests.RequestException, net_guard.BlockedURL):
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")

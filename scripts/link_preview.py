@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import urljoin
 
-import requests
 from bs4 import BeautifulSoup
 
+import net_guard
 from db import now_iso
 
 USER_AGENT = "Mozilla/5.0 (compatible; MVPLinkPreview/1.0)"
@@ -57,12 +57,12 @@ def fetch_link_preview(url: str) -> LinkPreview:
     fetched_at = now_iso()
     try:
         # stream=True fetches headers first, so non-HTML links (videos, images)
-        # are rejected without downloading their body.
-        with requests.get(
+        # are rejected without downloading their body. safe_get refuses internal
+        # targets at every redirect hop (SSRF).
+        with net_guard.safe_get(
             url,
             headers={"User-Agent": USER_AGENT},
             timeout=12,
-            allow_redirects=True,
             stream=True,
         ) as resp:
             resp.raise_for_status()

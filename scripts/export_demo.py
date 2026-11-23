@@ -378,6 +378,10 @@ NETLIFY_TOML = """[build]
   for = "/*"
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "no-referrer"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; connect-src 'self' https://commons.wikimedia.org; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 """
 
 README_TEMPLATE = """# TrumpVIX — Demo Snapshot

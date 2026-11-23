@@ -32,6 +32,34 @@ REACTION_ORDER = {series_id: index for index, series_id in enumerate(REACTION_SE
 SAFE_LINK_SCHEMES = ("http://", "https://", "mailto:")
 
 
+@app.after_request
+def add_security_headers(response):
+    """Baseline hardening for every response.
+
+    The page is a single inline script that only calls this origin; post media and
+    backgrounds come from https CDNs and blob: URLs. `unsafe-inline` for scripts is a
+    deliberate trade-off: the frontend is one inline block, and untrusted content is
+    sanitized and escaped before it reaches the DOM.
+    """
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' https: data: blob:; "
+        "media-src 'self' https: blob:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    )
+    return response
+
+
 def parse_days(value: str | None) -> int:
     try:
         days = int(value) if value else 30
@@ -167,6 +195,10 @@ def _sanitized_soup(value: str | None) -> BeautifulSoup:
     for tag in soup.find_all(True):
         if tag.name not in allowed:
             tag.unwrap()
+        elif tag.name != "a":
+            # p and br need no attributes; drop any that arrived with the post
+            # HTML (event handlers, inline styles).
+            tag.attrs = {}
 
     return soup
 
@@ -631,6 +663,57 @@ _refresh_status = {
     "results": [],
 }
 
+# Refresh is a local control. By default only the machine running the server may
+# trigger one; set REFRESH_ALLOW_REMOTE=1 to let other hosts (still origin-checked
+# and rate-limited). REFRESH_MIN_INTERVAL throttles HTTP-triggered refreshes.
+REFRESH_ALLOW_REMOTE = os.environ.get("REFRESH_ALLOW_REMOTE", "0") == "1"
+try:
+    REFRESH_MIN_INTERVAL = max(0, int(os.environ.get("REFRESH_MIN_INTERVAL", "300")))
+except ValueError:
+    REFRESH_MIN_INTERVAL = 300
+_last_http_refresh = 0.0
+
+
+def client_is_local() -> bool:
+    """True when the request comes from this machine, not through a proxy.
+
+    Behind a same-host reverse proxy every request looks local, so a forwarded
+    header means it actually came from somewhere else.
+    """
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return False
+    return not request.headers.get("X-Forwarded-For")
+
+
+def refresh_is_same_origin() -> bool:
+    """Reject cross-site refresh requests, which need no CORS preflight (CSRF)."""
+    site = request.headers.get("Sec-Fetch-Site")
+    if site and site not in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("Origin")
+    if origin:
+        host = request.host
+        if origin not in (f"http://{host}", f"https://{host}"):
+            return False
+    return True
+
+
+def refresh_allowed_here() -> bool:
+    return REFRESH_ALLOW_REMOTE or client_is_local()
+
+
+def refresh_rate_gate() -> tuple[bool, int]:
+    """Return (allowed, retry_after_s) for an HTTP-triggered refresh."""
+    if REFRESH_MIN_INTERVAL <= 0:
+        return True, 0
+    with _refresh_lock:
+        last = _last_http_refresh
+    if last:
+        elapsed = monotonic() - last
+        if elapsed < REFRESH_MIN_INTERVAL:
+            return False, int(REFRESH_MIN_INTERVAL - elapsed) + 1
+    return True, 0
+
 
 def _run_step(name: str, args: list[str], timeout: int, project_root: str, env: dict) -> dict:
     try:
@@ -700,14 +783,33 @@ def refresh_status_snapshot() -> dict:
 
 @app.post("/api/refresh")
 def refresh():
+    if not refresh_is_same_origin():
+        return jsonify({"error": "cross-origin refresh rejected"}), 403
+    if not refresh_allowed_here():
+        return jsonify({"error": "refresh is limited to the server machine"}), 403
+    allowed, retry_after = refresh_rate_gate()
+    if not allowed:
+        return jsonify({"status": "rate limited", "retry_after_s": retry_after}), 429
     if not start_refresh():
         return jsonify({"status": "already running", **refresh_status_snapshot()}), 202
+    global _last_http_refresh
+    with _refresh_lock:
+        _last_http_refresh = monotonic()
     return jsonify({"status": "started"}), 202
 
 
 @app.get("/api/refresh/status")
 def refresh_status():
-    return jsonify(refresh_status_snapshot())
+    payload = refresh_status_snapshot()
+    if not client_is_local():
+        # Don't hand subprocess output (paths, upstream errors) to other hosts.
+        payload["results"] = [
+            {key: result[key] for key in ("step", "status", "duration_s") if key in result}
+            for result in payload["results"]
+        ]
+    payload["can_refresh"] = refresh_allowed_here() and refresh_is_same_origin()
+    payload["retry_after_s"] = refresh_rate_gate()[1]
+    return jsonify(payload)
 
 
 if __name__ == "__main__":
@@ -722,4 +824,6 @@ if __name__ == "__main__":
         start_refresh()
 
     port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, host="0.0.0.0", port=port)
+    # Localhost by default; set HOST=0.0.0.0 to serve the LAN (see Security in the README).
+    host = os.environ.get("HOST", "127.0.0.1")
+    app.run(debug=False, host=host, port=port)
