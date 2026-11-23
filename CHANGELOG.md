@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/export_demo.py`, which builds a read-only static snapshot of the
   dashboard (frontend plus baked data) into `dist-demo/` for the
   [demo site](https://github.com/JonPinto/trumpvix-demo).
+- `scripts/update_demo.sh`, which exports the snapshot and publishes and tags
+  it in the demo repository, plus a `demo-snapshot` OpenCode skill wrapping it.
 
 ### Changed
 

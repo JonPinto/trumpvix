@@ -145,6 +145,7 @@ scripts/
   deploy.sh                   Run the full ingestion pipeline once
   preview.py                  Print a DB summary to the terminal
   export_demo.py              Build the static demo snapshot (dist-demo/)
+  update_demo.sh              Export, publish and tag the demo snapshot
 templates/index.html          Single-page frontend
 static/                       CSS and logo
 data/                         SQLite database (created at runtime, gitignored)
@@ -165,6 +166,7 @@ Run these with the virtualenv active, from the repo root.
 | `scripts/deploy.sh` | Run all ingestion steps once, in order |
 | `scripts/preview.py` | Print statement/indicator counts and the latest rows |
 | `scripts/export_demo.py` | Build the static demo snapshot into `dist-demo/` |
+| `scripts/update_demo.sh` | Export the snapshot, then publish and tag it in the demo repo |
 
 To ingest by hand instead of using the server's refresh:
 
@@ -226,6 +228,12 @@ Generate it with:
 python scripts/export_demo.py          # writes dist-demo/
 ```
 
+To publish it to the demo repository in one step — export, validate, commit, tag and push:
+
+```bash
+scripts/update_demo.sh
+```
+
 The snapshot answers the page's `/api/*` calls from `snapshot.js` through a small `demo.js` shim:
 
 - `/api/statements` serves the baked posts; search and the date picker filter them client-side.
@@ -234,7 +242,7 @@ The snapshot answers the page's `/api/*` calls from `snapshot.js` through a smal
 - `/api/refresh` is a no-op and the refresh button is hidden.
 - Video tiles open the original source in a new tab (there is no server to proxy through).
 
-The demo repository is generated output. To refresh it, re-run the script and push `dist-demo/` there.
+The demo repository is generated output: `scripts/update_demo.sh` refreshes it and tags each snapshot `snap-<dd.mm.yy>`. This workflow is also packaged as the `demo-snapshot` OpenCode skill.
 
 ## Security
 
